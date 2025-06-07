@@ -1,183 +1,187 @@
-import random
-import numpy as np
 import pandas as pd
+import numpy as np
+import random
+import xgboost as xgb
 import matplotlib.pyplot as plt
 from sklearn.metrics import mean_absolute_percentage_error
-from xgboost import XGBRegressor
-from sklearn.inspection import permutation_importance
-import warnings
+from collections import defaultdict
+from tqdm import tqdm
 
-warnings.filterwarnings("ignore")
+random.seed(42)
 
-# ---------- 定义函数 ----------
-
-def get_features_and_targets(dfs, tickers_list, trading_dates, start_date, end_date):
-    # 提取区间内的数据
-    date_range = [d for d in trading_dates if start_date <= d <= end_date]
-    if len(date_range) <= 5:
-        return None, None, None
-
-    # 计算 rolling features
-    delta_w_dmss = dfs["delta_weight_DMSS"].T[tickers_list].rolling(3).std().T
-    mean_w_dmss = dfs["delta_weight_DMSS"].T[tickers_list].rolling(3).mean().T
-    abs_mean_w_dmss = dfs["delta_weight_DMSS"].abs().T[tickers_list].rolling(3).mean().T
-
-    delta_w_dmsc = dfs["delta_weight_DMSC"].T[tickers_list].rolling(3).std().T
-    mean_w_dmsc = dfs["delta_weight_DMSC"].T[tickers_list].rolling(3).mean().T
-    abs_mean_w_dmsc = dfs["delta_weight_DMSC"].abs().T[tickers_list].rolling(3).mean().T
-
-    X_list, y_list, ticker_idx = [], [], []
-
-    for d in date_range[2:-5]:  # 去掉前2天和最后5天
-        for ticker in tickers_list:
-            if pd.isna(dfs["EV_it"].loc[ticker, d]):
-                continue
-            row = [
-                dfs["ret1"].loc[ticker, d],
-                dfs["ret3"].loc[ticker, d],
-                dfs["ret5"].loc[ticker, d],
-                dfs["target_weight_DMSS"].loc[ticker, d],
-                dfs["current_weight_DMSS"].loc[ticker, d],
-                dfs["delta_weight_DMSS"].loc[ticker, d],
-                dfs["event_code_DMSS"].loc[ticker, d],
-                dfs["delta_notional_DMSS"].loc[ticker, d],
-                dfs["delta_shares_DMSS"].loc[ticker, d],
-                dfs["map_code"].loc[ticker, d],
-                mean_w_dmss.loc[ticker, d],
-                delta_w_dmss.loc[ticker, d],
-                abs_mean_w_dmss.loc[ticker, d],
-                dfs["target_weight_DMSC"].loc[ticker, d],
-                dfs["current_weight_DMSC"].loc[ticker, d],
-                dfs["delta_weight_DMSC"].loc[ticker, d],
-                dfs["event_code_DMSC"].loc[ticker, d],
-                dfs["delta_notional_DMSC"].loc[ticker, d],
-                dfs["delta_shares_DMSC"].loc[ticker, d],
-                mean_w_dmsc.loc[ticker, d],
-                delta_w_dmsc.loc[ticker, d],
-                abs_mean_w_dmsc.loc[ticker, d],
-            ]
-            if any(pd.isna(row)):
-                continue
-            X_list.append(row)
-            y_list.append(dfs["EV_it"].loc[ticker, d])
-            ticker_idx.append((ticker, d))
-
-    X = pd.DataFrame(X_list, columns=[
-        "ret1", "ret3", "ret5",
-        "target_weight_DMSS", "current_weight_DMSS", "delta_weight_DMSS",
-        "event_code_DMSS", "delta_notional_DMSS", "delta_shares_DMSS",
-        "map_code", "mean_DMSS", "std_DMSS", "abs_mean_DMSS",
-        "target_weight_DMSC", "current_weight_DMSC", "delta_weight_DMSC",
-        "event_code_DMSC", "delta_notional_DMSC", "delta_shares_DMSC",
-        "mean_DMSC", "std_DMSC", "abs_mean_DMSC"
-    ])
-    y = np.array(y_list)
-    return X, y, ticker_idx
-
-
-def compute_metrics(y_true, y_pred):
-    win = np.mean(np.sign(y_true) == np.sign(y_pred))
-    with np.errstate(divide='ignore', invalid='ignore'):
-        ape = np.abs((y_true - y_pred) / y_true)
-        ape[np.isinf(ape)] = 1.0  # 设置为100%
-        ape = np.nan_to_num(ape, nan=1.0)
-    return win, ape
-
-
-# ---------- 主流程 ----------
-
+# 假设 baskets 是已有的字典
 basket_keys = list(baskets.keys())
-assert len(basket_keys) == 4, "当前basket数量不是4，不能做4-fold"
+random.shuffle(basket_keys)
 
-results = []
-all_features = []
-all_importances = []
+folds = [basket_keys[i:] + basket_keys[:i] for i in range(4)]  # 每次留一个test
 
-for i in range(4):
-    test_key = basket_keys[i]
+all_results = []
+feature_importance_all = []
+
+for fold_idx in range(4):
+    test_key = basket_keys[fold_idx]
     train_keys = [k for k in basket_keys if k != test_key]
+    
+    X_train_list, y_train_list = [], []
+    X_test_list, y_test_list, stock_ids, date_ids = [], [], [], []
 
-    # 拼接训练集
-    X_train_all, y_train_all = [], []
     for k in train_keys:
-        X_part, y_part, _ = get_features_and_targets(dfs, tickers_list, trading_dates,
-                                                     baskets[k]['start_date'], baskets[k]['end_date'])
-        if X_part is not None:
-            X_train_all.append(X_part)
-            y_train_all.append(y_part)
+        basket = baskets[k]
+        dates = sorted(basket['dates'])
+        if len(dates) < 10: continue
 
-    X_train = pd.concat(X_train_all, axis=0)
-    y_train = np.concatenate(y_train_all)
+        feature_days = dates[-10:-5]
+        target_days = dates[-5:]
 
-    # 测试集按 T-4 到 T 拆成五个模型
-    X_test_all, y_test_all, idx_test_all = get_features_and_targets(dfs, tickers_list, trading_dates,
-                                                                     baskets[test_key]['start_date'],
-                                                                     baskets[test_key]['end_date'])
-    if X_test_all is None:
-        continue
+        for ticker in tickers_list:
+            if dfs["EV_it"].loc[ticker, target_days].isnull().any(): continue
 
-    date_list = sorted(set([d for t, d in idx_test_all]))
-    test_result, test_ape, test_sign = [], [], []
+            X_feat = []
+            for date in feature_days:
+                f_row = [
+                    dfs["ret1"].loc[ticker, date],
+                    dfs["ret3"].loc[ticker, date],
+                    dfs["ret5"].loc[ticker, date],
+                    dfs["target_weight_DMSS"].loc[ticker, date],
+                    dfs["current_weight_DMSS"].loc[ticker, date],
+                    dfs["delta_weight_DMSS"].loc[ticker, date],
+                    dfs["event_code_DMSS"].loc[ticker, date],
+                    dfs["delta_notional_DMSS"].loc[ticker, date],
+                    dfs["delta_shares_DMSS"].loc[ticker, date],
+                    dfs["map_code"].loc[ticker, date],
+                    dfs["target_weight_DMSC"].loc[ticker, date],
+                    dfs["current_weight_DMSC"].loc[ticker, date],
+                    dfs["delta_weight_DMSC"].loc[ticker, date],
+                    dfs["event_code_DMSC"].loc[ticker, date],
+                    dfs["delta_notional_DMSC"].loc[ticker, date],
+                    dfs["delta_shares_DMSC"].loc[ticker, date],
+                    dfs["map_code"].loc[ticker, date],
+                    dfs["delta_weight_DMSS"].loc[ticker, feature_days[-3:]].std(),
+                    dfs["delta_weight_DMSS"].loc[ticker, feature_days[-3:]].mean(),
+                    dfs["delta_weight_DMSS"].loc[ticker, feature_days[-3:]].abs().mean(),
+                    dfs["delta_weight_DMSC"].loc[ticker, feature_days[-3:]].std(),
+                    dfs["delta_weight_DMSC"].loc[ticker, feature_days[-3:]].mean(),
+                    dfs["delta_weight_DMSC"].loc[ticker, feature_days[-3:]].abs().mean(),
+                ]
+                if any(pd.isna(f_row)):
+                    X_feat = None
+                    break
+                X_feat.extend(f_row)
+            if X_feat is None:
+                continue
+            y_vals = dfs["EV_it"].loc[ticker, target_days].values
+            if any(pd.isna(y_vals)): continue
 
-    for offset in range(5):
-        day_target = date_list[-5 + offset]
-        X_test_day = []
-        y_test_day = []
-        idx_day = []
+            X_train_list.append(X_feat)
+            y_train_list.append(y_vals)
 
-        for j, (t, d) in enumerate(idx_test_all):
-            if d == day_target:
-                X_test_day.append(X_test_all.iloc[j])
-                y_test_day.append(y_test_all[j])
-                idx_day.append(t)
+    # 把train转换成np.array格式方便处理
+    X_train = np.array(X_train_list)
+    y_train = np.array(y_train_list)
 
-        if not X_test_day:
+    # 对于每个T-5 ~ T训练5个模型
+    models = []
+    for t in range(5):
+        dtrain = xgb.DMatrix(X_train, label=y_train[:, t])
+        model = xgb.train(params={"objective": "reg:squarederror"}, dtrain=dtrain, num_boost_round=100)
+        models.append(model)
+        feature_importance_all.append(model.get_score(importance_type='gain'))
+
+    # 预测test集
+    basket = baskets[test_key]
+    dates = sorted(basket['dates'])
+    if len(dates) < 10: continue
+    feature_days = dates[-10:-5]
+    target_days = dates[-5:]
+
+    for ticker in tickers_list:
+        if dfs["EV_it"].loc[ticker, target_days].isnull().any(): continue
+        X_feat = []
+        for date in feature_days:
+            f_row = [
+                dfs["ret1"].loc[ticker, date],
+                dfs["ret3"].loc[ticker, date],
+                dfs["ret5"].loc[ticker, date],
+                dfs["target_weight_DMSS"].loc[ticker, date],
+                dfs["current_weight_DMSS"].loc[ticker, date],
+                dfs["delta_weight_DMSS"].loc[ticker, date],
+                dfs["event_code_DMSS"].loc[ticker, date],
+                dfs["delta_notional_DMSS"].loc[ticker, date],
+                dfs["delta_shares_DMSS"].loc[ticker, date],
+                dfs["map_code"].loc[ticker, date],
+                dfs["target_weight_DMSC"].loc[ticker, date],
+                dfs["current_weight_DMSC"].loc[ticker, date],
+                dfs["delta_weight_DMSC"].loc[ticker, date],
+                dfs["event_code_DMSC"].loc[ticker, date],
+                dfs["delta_notional_DMSC"].loc[ticker, date],
+                dfs["delta_shares_DMSC"].loc[ticker, date],
+                dfs["map_code"].loc[ticker, date],
+                dfs["delta_weight_DMSS"].loc[ticker, feature_days[-3:]].std(),
+                dfs["delta_weight_DMSS"].loc[ticker, feature_days[-3:]].mean(),
+                dfs["delta_weight_DMSS"].loc[ticker, feature_days[-3:]].abs().mean(),
+                dfs["delta_weight_DMSC"].loc[ticker, feature_days[-3:]].std(),
+                dfs["delta_weight_DMSC"].loc[ticker, feature_days[-3:]].mean(),
+                dfs["delta_weight_DMSC"].loc[ticker, feature_days[-3:]].abs().mean(),
+            ]
+            if any(pd.isna(f_row)):
+                X_feat = None
+                break
+            X_feat.extend(f_row)
+        if X_feat is None:
             continue
+        y_true = dfs["EV_it"].loc[ticker, target_days].values
+        if any(pd.isna(y_true)): continue
 
-        model = XGBRegressor(n_estimators=100, max_depth=4)
-        model.fit(X_train, y_train)
-        y_pred = model.predict(pd.DataFrame(X_test_day, columns=X_train.columns))
+        preds = []
+        for t in range(5):
+            dpred = xgb.DMatrix(np.array(X_feat).reshape(1, -1))
+            pred = models[t].predict(dpred)[0]
+            preds.append(pred)
 
-        win, ape = compute_metrics(np.array(y_test_day), y_pred)
-        test_result.extend([win] * len(y_test_day))
-        test_ape.extend(list(ape))
-        test_sign.extend(zip(idx_day, [day_target]*len(y_test_day)))
+        for t in range(5):
+            pred = preds[t]
+            actual = y_true[t]
+            win = int((pred >= 0 and actual >= 0) or (pred < 0 and actual < 0))
+            mape = 100.0 if actual == 0 else abs(pred - actual) / abs(actual)
+            all_results.append({
+                "ticker": ticker,
+                "fold": fold_idx,
+                "T_minus": 5 - t,
+                "win": win,
+                "mape": mape,
+                "pred": pred,
+                "actual": actual
+            })
 
-        # 特征重要性
-        imp = model.feature_importances_
-        all_importances.append(pd.Series(imp, index=X_train.columns))
+# 汇总结果
+result_df = pd.DataFrame(all_results)
 
-    results.append({
-        "win": test_result,
-        "mape": test_ape,
-        "sign_idx": test_sign
-    })
+# 画 boxplot: Winning Rate
+win_box = result_df.groupby(["ticker", "T_minus"])["win"].mean().reset_index()
+mape_box = result_df.groupby(["ticker", "T_minus"])["mape"].mean().reset_index()
 
-# ---------- 汇总画图 ----------
+fig, axs = plt.subplots(1, 2, figsize=(14, 6))
+axs[0].boxplot([win_box[win_box["T_minus"] == i]["win"] for i in range(5, 0, -1)])
+axs[0].set_title("Winning Rate Boxplot")
+axs[0].set_xticklabels(["T-5", "T-4", "T-3", "T-2", "T"])
+axs[0].set_ylabel("Winning Rate")
 
-# Boxplot for winning rate
-all_win = [w for fold in results for w in fold["win"]]
-all_mape = [m for fold in results for m in fold["mape"]]
+axs[1].boxplot([mape_box[mape_box["T_minus"] == i]["mape"] for i in range(5, 0, -1)])
+axs[1].set_title("MAPE Boxplot")
+axs[1].set_xticklabels(["T-5", "T-4", "T-3", "T-2", "T"])
+axs[1].set_ylabel("MAPE")
 
-plt.figure()
-plt.boxplot(all_win)
-plt.title("Winning Rate (boxplot)")
-plt.ylabel("Rate")
-plt.savefig("winning_rate_boxplot.png")
+plt.tight_layout()
+plt.show()
 
-plt.figure()
-plt.boxplot(all_mape)
-plt.title("MAPE (boxplot)")
-plt.ylabel("MAPE")
-plt.savefig("mape_boxplot.png")
-
-# 特征重要性
-avg_importance = pd.concat(all_importances, axis=1).mean(axis=1).sort_values(ascending=False)
-print("Top Feature Importances:")
-print(avg_importance.head(10))
+# Feature importance 汇总
+importance_df = pd.DataFrame(feature_importance_all).fillna(0)
+importance_df = importance_df.groupby(importance_df.columns, axis=1).sum()
+importance_df = importance_df.mean().sort_values(ascending=False).reset_index()
+importance_df.columns = ["Feature", "Importance"]
 
 plt.figure(figsize=(10, 6))
-avg_importance.head(20).plot(kind="bar")
-plt.title("Top 20 Feature Importances")
-plt.tight_layout()
-plt.savefig("feature_importance_barplot.png")
+plt.barh(importance_df["Feature"], importance_df["Importance"])
+plt.title("Average Feature Importance")
+plt.gca().invert_yaxis()
+plt.show()
