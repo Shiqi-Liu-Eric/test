@@ -7,35 +7,41 @@ from sklearn.metrics import mean_absolute_percentage_error
 from collections import defaultdict
 from tqdm import tqdm
 
+# 假设 baskets 和 dfs 是之前预处理好的
 random.seed(42)
 
-# 假设 baskets 是已有的字典
 basket_keys = list(baskets.keys())
 random.shuffle(basket_keys)
 
-folds = [basket_keys[i:] + basket_keys[:i] for i in range(4)]  # 每次留一个test
-
+folds = [basket_keys[i:] + basket_keys[:i] for i in range(4)]  # 每次留一个 test
 all_results = []
 feature_importance_all = []
+
+feature_names = [
+    "ret1", "ret3", "ret5",
+    "target_weight_DMSS", "current_weight_DMSS", "delta_weight_DMSS", "event_code_DMSS",
+    "delta_notional_DMSS", "delta_shares_DMSS", "map_code_DMSS",
+    "target_weight_DMSC", "current_weight_DMSC", "delta_weight_DMSC", "event_code_DMSC",
+    "delta_notional_DMSC", "delta_shares_DMSC", "map_code_DMSC",
+    "tsstd_delta_weight_DMSS", "tsmean_delta_weight_DMSS", "tsmean_abs_delta_weight_DMSS",
+    "tsstd_delta_weight_DMSC", "tsmean_delta_weight_DMSC", "tsmean_abs_delta_weight_DMSC"
+]
 
 for fold_idx in range(4):
     test_key = basket_keys[fold_idx]
     train_keys = [k for k in basket_keys if k != test_key]
-    
+
     X_train_list, y_train_list = [], []
-    X_test_list, y_test_list, stock_ids, date_ids = [], [], [], []
 
     for k in train_keys:
         basket = baskets[k]
         dates = sorted(basket['dates'])
         if len(dates) < 10: continue
-
         feature_days = dates[-10:-5]
         target_days = dates[-5:]
 
         for ticker in tickers_list:
             if dfs["EV_it"].loc[ticker, target_days].isnull().any(): continue
-
             X_feat = []
             for date in feature_days:
                 f_row = [
@@ -61,7 +67,7 @@ for fold_idx in range(4):
                     dfs["delta_weight_DMSS"].loc[ticker, feature_days[-3:]].abs().mean(),
                     dfs["delta_weight_DMSC"].loc[ticker, feature_days[-3:]].std(),
                     dfs["delta_weight_DMSC"].loc[ticker, feature_days[-3:]].mean(),
-                    dfs["delta_weight_DMSC"].loc[ticker, feature_days[-3:]].abs().mean(),
+                    dfs["delta_weight_DMSC"].loc[ticker, feature_days[-3:]].abs().mean()
                 ]
                 if any(pd.isna(f_row)):
                     X_feat = None
@@ -71,23 +77,19 @@ for fold_idx in range(4):
                 continue
             y_vals = dfs["EV_it"].loc[ticker, target_days].values
             if any(pd.isna(y_vals)): continue
-
             X_train_list.append(X_feat)
             y_train_list.append(y_vals)
 
-    # 把train转换成np.array格式方便处理
     X_train = np.array(X_train_list)
     y_train = np.array(y_train_list)
 
-    # 对于每个T-5 ~ T训练5个模型
     models = []
     for t in range(5):
-        dtrain = xgb.DMatrix(X_train, label=y_train[:, t])
+        dtrain = xgb.DMatrix(X_train, label=y_train[:, t], feature_names=feature_names)
         model = xgb.train(params={"objective": "reg:squarederror"}, dtrain=dtrain, num_boost_round=100)
         models.append(model)
         feature_importance_all.append(model.get_score(importance_type='gain'))
 
-    # 预测test集
     basket = baskets[test_key]
     dates = sorted(basket['dates'])
     if len(dates) < 10: continue
@@ -121,7 +123,7 @@ for fold_idx in range(4):
                 dfs["delta_weight_DMSS"].loc[ticker, feature_days[-3:]].abs().mean(),
                 dfs["delta_weight_DMSC"].loc[ticker, feature_days[-3:]].std(),
                 dfs["delta_weight_DMSC"].loc[ticker, feature_days[-3:]].mean(),
-                dfs["delta_weight_DMSC"].loc[ticker, feature_days[-3:]].abs().mean(),
+                dfs["delta_weight_DMSC"].loc[ticker, feature_days[-3:]].abs().mean()
             ]
             if any(pd.isna(f_row)):
                 X_feat = None
@@ -134,7 +136,7 @@ for fold_idx in range(4):
 
         preds = []
         for t in range(5):
-            dpred = xgb.DMatrix(np.array(X_feat).reshape(1, -1))
+            dpred = xgb.DMatrix(np.array(X_feat).reshape(1, -1), feature_names=feature_names)
             pred = models[t].predict(dpred)[0]
             preds.append(pred)
 
@@ -153,35 +155,43 @@ for fold_idx in range(4):
                 "actual": actual
             })
 
-# 汇总结果
+# 结果分析和可视化
 result_df = pd.DataFrame(all_results)
-
-# 画 boxplot: Winning Rate
 win_box = result_df.groupby(["ticker", "T_minus"])["win"].mean().reset_index()
 mape_box = result_df.groupby(["ticker", "T_minus"])["mape"].mean().reset_index()
 
-fig, axs = plt.subplots(1, 2, figsize=(14, 6))
-axs[0].boxplot([win_box[win_box["T_minus"] == i]["win"] for i in range(5, 0, -1)])
-axs[0].set_title("Winning Rate Boxplot")
-axs[0].set_xticklabels(["T-5", "T-4", "T-3", "T-2", "T"])
-axs[0].set_ylabel("Winning Rate")
-
-axs[1].boxplot([mape_box[mape_box["T_minus"] == i]["mape"] for i in range(5, 0, -1)])
-axs[1].set_title("MAPE Boxplot")
-axs[1].set_xticklabels(["T-5", "T-4", "T-3", "T-2", "T"])
-axs[1].set_ylabel("MAPE")
-
-plt.tight_layout()
+# Barplot: Winning Rate
+avg_win_rate = win_box.groupby("T_minus")["win"].mean().sort_index(ascending=False)
+plt.figure(figsize=(8, 5))
+plt.bar(["T-5", "T-4", "T-3", "T-2", "T"], avg_win_rate)
+plt.title("Average Winning Rate per Day")
+plt.ylabel("Winning Rate")
+plt.xlabel("Rebalance Day")
 plt.show()
 
-# Feature importance 汇总
-importance_df = pd.DataFrame(feature_importance_all).fillna(0)
-importance_df = importance_df.groupby(importance_df.columns, axis=1).sum()
-importance_df = importance_df.mean().sort_values(ascending=False).reset_index()
-importance_df.columns = ["Feature", "Importance"]
+# Boxplot: MAPE
+plt.figure(figsize=(8, 5))
+plt.boxplot([mape_box[mape_box["T_minus"] == i]["mape"] for i in range(5, 0, -1)])
+plt.title("MAPE Boxplot")
+plt.xticks([1, 2, 3, 4, 5], ["T-5", "T-4", "T-3", "T-2", "T"])
+plt.ylabel("MAPE")
+plt.show()
+
+# Feature Importance Plot
+importance_all = defaultdict(float)
+for fmap in feature_importance_all:
+    for k, v in fmap.items():
+        importance_all[k] += v
+
+importance_df = pd.DataFrame({
+    "Feature": list(importance_all.keys()),
+    "Importance": list(importance_all.values())
+}).sort_values(by="Importance", ascending=False).head(15)
 
 plt.figure(figsize=(10, 6))
 plt.barh(importance_df["Feature"], importance_df["Importance"])
-plt.title("Average Feature Importance")
+plt.title("Top 15 Feature Importances")
+plt.xlabel("Gain")
 plt.gca().invert_yaxis()
+plt.tight_layout()
 plt.show()
