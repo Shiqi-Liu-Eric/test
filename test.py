@@ -1,63 +1,66 @@
-import matplotlib.pyplot as plt
-import seaborn as sns
-from itertools import combinations
-from scipy.stats import zscore
+use_stat_alpha = True  # ← 新控制变量
 
-# --- Step 1: 找出所有 basket 中都出现且 map_code 为 1 的股票 ---
+...
 
-valid_tickers = []
+if use_stat_alpha:
+    preds = []
+    y_true_list = []
 
-for ticker in tickers_list:
-    all_ok = True
-    for k in baskets.keys():
-        dates = sorted(baskets[k]["dates"])
-        target_days = dates[-5:]
-        vals = dfs["map_code"].loc[ticker, target_days]
-        if vals.isnull().any() or not (vals == 1).all():
-            all_ok = False
-            break
-    if all_ok:
-        valid_tickers.append(ticker)
+    dates = sorted(baskets[test_key]["dates"])
+    feature_days = dates[-10:-5]   # T-9 ~ T-5
+    target_days = dates[-5:]       # T-4 ~ T
 
-print(f"符合条件的股票数量: {len(valid_tickers)}")
+    tickers_valid = [t for t in tickers_list if not dfs["EV_it"].loc[t, target_days].isnull().any()]
 
-# --- Step 2-4: 计算每只股票四个 basket 中 EV_it 向量的两两相关性平均值 ---
+    for day in target_days:
+        alpha_ret1 = []
+        alpha_mean_wd = []
+        alpha_std_wd = []
+        alpha_other_ret = []
 
-correlation_scores = []
+        for ticker in tickers_valid:
+            # 1. 当前day的ret1
+            val1 = dfs["ret1"].loc[ticker, day] if not pd.isna(dfs["ret1"].loc[ticker, day]) else 0
+            alpha_ret1.append(val1)
 
-for ticker in valid_tickers:
-    ev_vectors = []
-    for k in baskets.keys():
-        dates = sorted(baskets[k]["dates"])
-        target_days = dates[-5:]
-        ev = dfs["EV_it"].loc[ticker, target_days]
-        if ev.isnull().any():
-            break
-        ev_vectors.append(ev.values)
+            # 2. 对应feature_days的delta_weight_DMSS
+            wds = [dfs["delta_weight_DMSS"].loc[ticker, d] if not pd.isna(dfs["delta_weight_DMSS"].loc[ticker, d]) else 0 for d in feature_days]
+            mean_wd = np.mean(wds[-3:])
+            std_wd = np.std(wds[-3:])
+            alpha_mean_wd.append(mean_wd)
+            alpha_std_wd.append(std_wd)
 
-    if len(ev_vectors) == 4:
-        corr_sum = 0
-        count = 0
-        for v1, v2 in combinations(ev_vectors, 2):  # 共6对
-            corr = np.corrcoef(v1, v2)[0, 1]
-            if not np.isnan(corr):
-                corr_sum += corr
-                count += 1
-        if count > 0:
-            correlation_scores.append(corr_sum / count)
+            # 3. 其他baskets这一天的ret1
+            other_ret = []
+            for k in basket_keys:
+                if k == test_key or day not in baskets[k]["dates"]:
+                    continue
+                try:
+                    val = dfs["ret1"].loc[ticker, day]
+                    if not pd.isna(val): other_ret.append(val)
+                except: pass
+            mean_other = np.mean(other_ret) if other_ret else 0
+            alpha_other_ret.append(mean_other)
 
-# --- Step 5: 画 boxplot（排除异常值）+ 打印统计 ---
+        # 对每个 alpha 特征列做 z-score
+        def zscore(col):
+            mean, std = np.mean(col), np.std(col)
+            return [(x - mean) / (std + 1e-6) for x in col]
 
-corr_array = np.array(correlation_scores)
-filtered_corr = corr_array[(np.abs(zscore(corr_array)) < 3)]  # 去除3-sigma之外的outliers
+        z1 = zscore(alpha_ret1)
+        z2 = zscore(alpha_mean_wd)
+        z3 = zscore(alpha_std_wd)
+        z4 = zscore(alpha_other_ret)
 
-plt.figure(figsize=(8, 5))
-sns.boxplot(y=filtered_corr)
-plt.title("Average Pairwise Correlation of EV_it Across Baskets (Per Stock)")
-plt.ylabel("Average Pearson Correlation")
-plt.grid(True)
-plt.show()
+        # 合成最终 alpha 值（加权或平均）
+        alpha_final = [(a + b + c + d) / 4 for a, b, c, d in zip(z1, z2, z3, z4)]
 
-# 打印基本统计信息
-print("统计信息（去除outliers）:")
-print(pd.Series(filtered_corr).describe())
+        # 当前 day 的预测值：用 alpha_final 替代预测 EV_it
+        for idx, ticker in enumerate(tickers_valid):
+            if len(preds) <= idx:
+                preds.append([])
+                y_true_list.append(dfs["EV_it"].loc[ticker, target_days].values.tolist())
+            preds[idx].append(alpha_final[idx])
+
+    # 注意：preds 是每只股票为一个 list，长度为 5（对应 T-4~T）
+    # y_true_list 是同样结构，用于后续评估
