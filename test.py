@@ -1,78 +1,130 @@
-import pandas as pd
-import matplotlib.pyplot as plt
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
 
-# 初始化用于画图的结果
-acc_return_add_all = {}
-acc_return_del_all = {}
+# 选定特征列
+X = result_df[alpha_cols].copy()
+y = result_df["actual"].copy()
+w = result_df["target_weight"].copy()
 
-# 获取所有篮子的最早和最晚日期，作为画图的横坐标范围
-all_dates = []
-for key, basket in baskets.items():
-    all_dates.extend(basket["dates"])
-min_date, max_date = min(all_dates), max(all_dates)
+# 清理与填充
+X.replace([np.inf, -np.inf], np.nan, inplace=True)
+X.fillna(X.mean(), inplace=True)
+y.fillna(0, inplace=True)
+w.fillna(0, inplace=True)
 
-plot_dates = pd.date_range(min_date, max_date, freq="B")
+# 标准化特征
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X)
 
-# 初始化全局时间线上的空值
-for date in plot_dates:
-    acc_return_add_all[date] = None
-    acc_return_del_all[date] = None
+# 划分训练测试集
+X_train, X_test, y_train, y_test, w_train, w_test = train_test_split(
+    X_scaled, y, w, test_size=0.2, random_state=42
+)
 
-# 针对每一个 rebal event 处理
-for key, basket in baskets.items():
-    start_date = basket["start_date"]
-    end_date = basket["end_date"]
-    dates = basket["dates"]
+# 转为 tensor
+X_train = torch.tensor(X_train, dtype=torch.float32)
+y_train = torch.tensor(y_train.values, dtype=torch.float32).view(-1, 1)
+w_train = torch.tensor(w_train.values, dtype=torch.float32).view(-1, 1)
+X_test = torch.tensor(X_test, dtype=torch.float32)
+y_test = torch.tensor(y_test.values, dtype=torch.float32).view(-1, 1)
+w_test = torch.tensor(w_test.values, dtype=torch.float32).view(-1, 1)
 
-    # 找出每一天的新增和删除成分股
-    acc_return_add = []
-    acc_return_del = []
+class WeightedMLP(nn.Module):
+    def __init__(self, input_dim):
+        super(WeightedMLP, self).__init__()
+        self.model = nn.Sequential(
+            nn.Linear(input_dim, 128),
+            nn.ReLU(),
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.Linear(64, 1)
+        )
 
-    for date in dates:
-        add_stocks = []
-        del_stocks = []
+    def forward(self, x):
+        return self.model(x)
 
-        for ticker in tickers_list:
-            code_dmss = dfs['event_code_DMSS'].loc[ticker, date] if ticker in dfs['event_code_DMSS'].index else None
-            code_dmsc = dfs['event_code_DMSC'].loc[ticker, date] if ticker in dfs['event_code_DMSC'].index else None
+def weighted_mse_loss(pred, target, weight):
+    return torch.mean(weight * (pred - target) ** 2)
 
-            if code_dmss == 2 or code_dmsc == 2:
-                add_stocks.append(ticker)
-            elif code_dmss == -2 or code_dmsc == -2:
-                del_stocks.append(ticker)
+model = WeightedMLP(X_train.shape[1])
+optimizer = optim.Adam(model.parameters(), lr=0.001)
 
-        def calc_acc_return(ticker_list):
-            acc_ret = 0
-            for ticker in ticker_list:
-                if ticker not in dfs['close'].index or ticker not in dfs['target_weight_DMSS'].index:
-                    continue
-                close_series = dfs['close'].loc[ticker, dates]
-                base_price = close_series[start_date]
-                weighted_return = (close_series - base_price) * dfs['target_weight_DMSS'].loc[ticker, dates]
-                acc_ret += weighted_return
-            return acc_ret
+num_epochs = 100
+for epoch in range(num_epochs):
+    model.train()
+    optimizer.zero_grad()
+    
+    y_pred = model(X_train)
+    loss = weighted_mse_loss(y_pred, y_train, w_train)
+    loss.backward()
+    optimizer.step()
 
-        # 累计收益计算
-        acc_add = calc_acc_return(add_stocks)
-        acc_del = calc_acc_return(del_stocks)
+    if epoch % 10 == 0:
+        print(f"Epoch {epoch}, Loss: {loss.item():.6f}")
 
-        # 记录当前篮子在该时间段的累计收益（对每一天）
-        for i, d in enumerate(dates):
-            acc_return_add_all[d] = acc_add.iloc[i]
-            acc_return_del_all[d] = acc_del.iloc[i]
+model.eval()
+with torch.no_grad():
+    y_pred_test = model(X_test)
+    test_loss = weighted_mse_loss(y_pred_test, y_test, w_test)
+    print(f"Test Weighted Loss: {test_loss.item():.6f}")
 
-# 转换为 Series 用于画图
-acc_add_series = pd.Series(acc_return_add_all)
-acc_del_series = pd.Series(acc_return_del_all)
 
-# 画图
-plt.figure(figsize=(12, 6))
-acc_add_series.plot(label='Add to Proforma', linestyle='-', marker='o')
-acc_del_series.plot(label='Delete from Proforma', linestyle='--', marker='x')
-plt.title("Accumulate Return of Add vs Delete Stocks Over Rebalancing Periods")
-plt.xlabel("Date")
-plt.ylabel("Accumulate Return")
-plt.legend()
-plt.grid(True)
-plt.tight_layout()
-plt.show()
+# ====================
+import xgboost as xgb
+import numpy as np
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+
+# 准备数据
+X = result_df[alpha_cols].copy()
+y = result_df["actual"].copy()
+w = result_df["target_weight"].copy()
+
+X.replace([np.inf, -np.inf], np.nan, inplace=True)
+X.fillna(X.mean(), inplace=True)
+y.fillna(0, inplace=True)
+w.fillna(0, inplace=True)
+
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X)
+
+X_train, X_test, y_train, y_test, w_train, w_test = train_test_split(
+    X_scaled, y, w, test_size=0.2, random_state=42
+)
+
+# 转为 DMatrix（必须显式传入权重）
+dtrain = xgb.DMatrix(X_train, label=y_train, weight=w_train)
+dtest = xgb.DMatrix(X_test, label=y_test, weight=w_test)
+
+# 定义自定义损失函数：加权 MSE
+def weighted_mse_obj(preds, dtrain):
+    labels = dtrain.get_label()
+    weights = dtrain.get_weight()
+    grad = 2 * weights * (preds - labels)
+    hess = 2 * weights
+    return grad, hess
+
+params = {
+    'max_depth': 6,
+    'eta': 0.03,
+    'subsample': 0.8,
+    'colsample_bytree': 0.8,
+    'objective': 'reg:squarederror',  # 仍然设置但被 override
+    'eval_metric': 'rmse'
+}
+
+bst = xgb.train(
+    params,
+    dtrain,
+    num_boost_round=200,
+    obj=weighted_mse_obj,  # ← 关键在这里
+    evals=[(dtrain, 'train'), (dtest, 'test')],
+    early_stopping_rounds=20
+)
+
+y_pred = bst.predict(dtest)
+rmse = np.sqrt(np.average((y_pred - y_test) ** 2, weights=w_test))
+print(f"Test Weighted RMSE: {rmse:.6f}")
