@@ -1,43 +1,70 @@
+import os
 import pandas as pd
+import numpy as np
+from tqdm import tqdm
+from datetime import datetime
 
-# 假设你已有以下两个 DataFrame
-df_sedol = dfs['ID_SEDOL1']
-df_isin = dfs['ID_ISIN']
+# 初始化 Barra 类（不变）
+barra = Barra()
 
-# 初始化空结果表
-result = []
+# 日期范围
+date_range = pd.date_range(start="2023-08-01", end="2023-08-28")
 
-for ticker in df_sedol.index:
-    sedol_series = df_sedol.loc[ticker]
-    isin_series = df_isin.loc[ticker]
-    
-    # 处理 SEDOL
-    sedol_counts = sedol_series.dropna().value_counts()
-    if not sedol_counts.empty:
-        top_sedol = sedol_counts.idxmax()
-        sedol_rate = sedol_counts.iloc[0] / sedol_counts.sum()
-    else:
-        top_sedol = pd.NA
-        sedol_rate = pd.NA
+# 读取所有 SEDOL 代码（用于获取所有资产）
+all_sedol_ids = df_id_map['SEDOL'].dropna().unique().tolist()
 
-    # 处理 ISIN
-    isin_counts = isin_series.dropna().value_counts()
-    if not isin_counts.empty:
-        top_isin = isin_counts.idxmax()
-        isin_rate = isin_counts.iloc[0] / isin_counts.sum()
-    else:
-        top_isin = pd.NA
-        isin_rate = pd.NA
+# 一次性读取所有 barra factors（主优化步骤）
+df_all_factors = barra.get_barra_factors(
+    date_range=date_range,
+    factors=unique_descriptors,
+    sec_ids=all_sedol_ids,
+    sec_id_type='SEDOL'
+)
 
-    result.append({
-        'SEDOL': top_sedol,
-        'ISIN': top_isin,
-        'SEDOL_rate': sedol_rate,
-        'ISIN_rate': isin_rate
-    })
+# 设置索引加速
+df_all_factors['Date'] = pd.to_datetime(df_all_factors['Date'])
+df_all_factors.set_index(['Date', 'AssetID'], inplace=True)
 
-# 转为 DataFrame，以 ticker 为 index
-df_id_map = pd.DataFrame(result, index=df_sedol.index)
+# 初始化 dfs_new（保持原有逻辑）
+tickers = dfs['ret1'].index.tolist()
+dates = pd.to_datetime(dfs['ret1'].columns.tolist()[:])
+dfs_new = {}
 
-# 可选：查看部分结果
-print(df_id_map.head())
+for desc in unique_descriptors:
+    dfs_new[desc] = pd.DataFrame(index=tickers, columns=dates, dtype=float)
+    dfs_new[desc][:] = np.nan  # 全部填 NaN
+
+# 遍历 ticker，提取其因子（主逻辑部分）
+for ticker in tqdm(tickers):
+    try:
+        sedol = df_id_map.loc[ticker, 'SEDOL']
+        if pd.isna(sedol):
+            continue
+
+        # 提取这个 ticker 的所有行
+        df_ticker = df_all_factors.xs(sedol, level='AssetID', drop_level=False)
+
+        if df_ticker.empty:
+            continue
+
+        for desc in unique_descriptors:
+            if desc in df_ticker.columns:
+                valid_dates = df_ticker.index.get_level_values('Date').intersection(dfs_new[desc].columns)
+                if len(valid_dates) == 0:
+                    continue
+                dfs_new[desc].loc[ticker, valid_dates] = df_ticker.loc[valid_dates, desc].values
+
+    except Exception as e:
+        print(f"❌ Failed for {ticker}: {e}")
+        continue
+
+# 保存为 pickle（和你原代码一致）
+os.makedirs('dfs_pickle', exist_ok=True)
+
+for desc, df in dfs_new.items():
+    file_path = os.path.join('dfs_pickle', f"{desc}.pkl")
+    with open(file_path, 'wb') as f:
+        import pickle
+        pickle.dump(df, f)
+
+print("✅ All descriptors processed and saved.")
