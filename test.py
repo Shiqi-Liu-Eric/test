@@ -1,71 +1,88 @@
-import statsmodels.api as sm
-import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
+import statsmodels.api as sm
+import matplotlib.pyplot as plt
 
 folds = result_df["fold"].unique()
-alpha_cols = [col for col in result_df.columns if col.startswith("alpha_")]
-all_results = []
-importance_by_fold = {}
-importance_by_tminus = {}
+tminus_vals = result_df["T_minus"].unique()
+alpha_cols = [col for col in result_df.columns if col.startswith(bundle)]
 
+r2_dict = {}
+r2adj_dict = {}
+beta_dict = {}
+pval_dict = {}
+
+# Main training loop
 for fold in folds:
-    importance_by_fold[fold] = []
-    print(f"\n=== fold {fold} ===")
+    for t in tminus_vals:
+        # Train: all folds except `fold` but same T_minus
+        train = result_df[(result_df['fold'] != fold) & (result_df['T_minus'] == t)].copy()
+        test = result_df[(result_df['fold'] == fold) & (result_df['T_minus'] == t)].copy()
+        
+        X_train = sm.add_constant(train[alpha_cols])
+        y_train = train["actual"]
+        mask = X_train.replace([np.inf, -np.inf, np.nan], np.nan).notnull().all(axis=1) & y_train.notnull()
+        X_train = X_train[mask]
+        y_train = y_train[mask]
 
-    for t_minus in range(1, 6):
-        train_df = result_df[(result_df["fold"] != fold) & (result_df["T_minus"] == t_minus)].copy()
-        test_df = result_df[(result_df["fold"] == fold) & (result_df["T_minus"] == t_minus)].copy()
-
-        if len(train_df) == 0 or len(test_df) == 0:
-            continue
-
-        # 去除 inf/-inf 和 NaN
-        train_df.replace([np.inf, -np.inf], np.nan, inplace=True)
-        test_df.replace([np.inf, -np.inf], np.nan, inplace=True)
-        train_df.dropna(subset=alpha_cols + ["actual"], inplace=True)
-        test_df.dropna(subset=alpha_cols + ["actual"], inplace=True)
-
-        # X, y 构造
-        X_train = sm.add_constant(train_df[alpha_cols])
-        y_train = train_df["actual"]
-        X_test = sm.add_constant(test_df[alpha_cols])
-        y_test = test_df["actual"]
-
-        # 拟合 OLS 模型
         model = sm.OLS(y_train, X_train).fit()
-        test_df["predicted"] = model.predict(X_test)
+        r2 = model.rsquared
+        r2_adj = model.rsquared_adj
+        r2_dict[(fold, t)] = r2
+        r2adj_dict[(fold, t)] = r2_adj
 
-        # 保存结果
-        all_results.append(test_df.copy())
+        beta_dict[(fold, t)] = model.params.drop("const", errors='ignore')
+        pval_dict[(fold, t)] = model.pvalues.drop("const", errors='ignore')
 
-        # 保存 feature importance
-        importance_by_fold[fold].append(model.params)
-        importance_by_tminus[(fold, t_minus)] = model.params
+# === Step 1: R2 & AdjR2 table ===
+r2_df = pd.DataFrame([
+    {"fold": f, "T_minus": t, "R2": r2_dict[(f, t)]}
+    for (f, t) in r2_dict
+])
+r2adj_df = pd.DataFrame([
+    {"fold": f, "T_minus": t, "R2_adj": r2adj_dict[(f, t)]}
+    for (f, t) in r2adj_dict
+])
 
-# 合并所有预测结果
-final_df = pd.concat(all_results, axis=0)
+r2_mean = r2_df["R2"].mean()
+r2adj_mean = r2adj_df["R2_adj"].mean()
 
-# ========= 可视化部分 =========
+print("=== R² Table ===")
+display(r2_df.pivot(index="fold", columns="T_minus", values="R2").assign(mean=lambda df: df.mean(axis=1)))
+print("Mean R²:", r2_mean)
 
-# 可视化 1：按 fold 汇总的平均 feature importance
-fig, axes = plt.subplots(1, len(folds), figsize=(5 * len(folds), 5))
+print("\n=== Adjusted R² Table ===")
+display(r2adj_df.pivot(index="fold", columns="T_minus", values="R2_adj").assign(mean=lambda df: df.mean(axis=1)))
+print("Mean Adj R²:", r2adj_mean)
+
+# === Step 2: Plot feature importance across folds ===
+beta_df = pd.DataFrame(beta_dict).T  # index: (fold, tminus), columns: features
+pval_df = pd.DataFrame(pval_dict).T
+
+# Fold-wise feature importance plot
+fold_avg = beta_df.groupby(level=0).mean()
+fig, axes = plt.subplots(len(folds), 1, figsize=(10, 4 * len(folds)))
 for i, fold in enumerate(folds):
-    if fold in importance_by_fold and len(importance_by_fold[fold]) > 0:
-        avg_coef = pd.DataFrame(importance_by_fold[fold]).mean()
-        avg_coef.plot(kind="bar", ax=axes[i], title=f"Fold {fold}")
-plt.suptitle("Feature Importance by Fold")
+    top_feats = fold_avg.loc[fold].abs().sort_values(ascending=False).head(15)
+    axes[i].barh(top_feats.index[::-1], top_feats.values[::-1])
+    axes[i].set_title(f"Fold {fold} - Top 15 Features (|beta|)")
 plt.tight_layout()
 plt.show()
 
-# 可视化 2：按 T_minus 汇总的平均 feature importance
-fig, axes = plt.subplots(1, 5, figsize=(25, 5))
-for t_minus in range(1, 6):
-    coefs = [importance_by_tminus[(f, t_minus)] for f in folds if (f, t_minus) in importance_by_tminus]
-    if not coefs:
-        continue
-    avg_coef = pd.DataFrame(coefs).mean()
-    avg_coef.plot(kind='bar', ax=axes[t_minus - 1], title=f"T_minus={t_minus}")
-plt.suptitle("Feature Importance by T_minus")
+# T_minus-wise feature importance plot
+tminus_avg = beta_df.groupby(level=1).mean()
+fig, axes = plt.subplots(len(tminus_vals), 1, figsize=(10, 4 * len(tminus_vals)))
+for i, t in enumerate(tminus_vals):
+    top_feats = tminus_avg.loc[t].abs().sort_values(ascending=False).head(15)
+    axes[i].barh(top_feats.index[::-1], top_feats.values[::-1])
+    axes[i].set_title(f"T_minus {t} - Top 15 Features (|beta|)")
 plt.tight_layout()
 plt.show()
+
+# === Step 3: Which features are significant on average ===
+pval_stack = pval_df.stack()
+pval_summary = pval_stack.groupby(level=1).mean().sort_values()
+significant_features = pval_summary[pval_summary < 0.05]
+
+print("\n=== Significant Features on Average (p < 0.05) ===")
+print(significant_features)
