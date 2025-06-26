@@ -1,47 +1,40 @@
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
+for idx_t, tminus in enumerate(tminuses):
 
-# 初始化结果列表
-line_y = []
-box_data = []
-x_ticks = []
+    df = result_df[result_df["T_minus"] == tminus].copy()
+    df = df.sample(frac=1, random_state=42).reset_index(drop=True)  # optional shuffle
 
-# 遍历每个 T_minus
-for t in sorted(final_df["T_minus"].unique()):
-    if t == 1:
-        continue
-    sub_df = final_df[final_df["T_minus"] == t].copy()
-    sub_df = sub_df.fillna(0)
+    # 将df按fold数量划分为k份
+    k = 15
+    fold_size = len(df) // k
+    all_stats = []
 
-    # 计算信号项
-    signal = np.sign(sub_df["predicted"]) * (sub_df["target_weight"] - sub_df["current_weight"]) * sub_df["EV_it"]
-    
-    # 累加结果用于折线图
-    line_y.append(signal.sum())
-    
-    # boxplot数据
-    box_data.append(signal)
-    x_ticks.append(f"T-{t}")
+    for fold_idx in range(k):
+        test_idx = range(fold_idx * fold_size, (fold_idx + 1) * fold_size)
+        test = df.iloc[test_idx].copy()
+        train_rest = df.drop(test_idx)
 
-# ---- 画图部分 ----
+        # 再从其余数据中抽取80%作为训练集
+        train = train_rest.sample(frac=0.8, random_state=fold_idx).copy()
 
-# 折线图
-plt.figure(figsize=(10, 5))
-plt.plot(x_ticks, line_y, marker='o')
-plt.title("Aggregate Signal Impact vs T_minus")
-plt.ylabel("Sum of signal * weight_diff * EV_it")
-plt.xlabel("T_minus")
-plt.grid(True)
-plt.tight_layout()
-plt.show()
+        X_train = sm.add_constant(train[alpha_cols])
+        y_train = train[target]
 
-# Boxplot（去掉离群值）
-plt.figure(figsize=(10, 5))
-plt.boxplot(box_data, labels=x_ticks, showfliers=False)
-plt.title("Distribution of signal * weight_diff * EV_it (per T_minus)")
-plt.ylabel("Signal Value")
-plt.xlabel("T_minus")
-plt.grid(True)
-plt.tight_layout()
-plt.show()
+        mask = X_train.replace([np.inf, -np.inf, np.nan], np.nan).notnull().all(axis=1) & y_train.notnull()
+        X_train, y_train = X_train[mask], y_train[mask]
+
+        model = sm.OLS(y_train, X_train).fit()
+        stats_df = model.summary2().tables[1].copy()
+        stats_df["T_minus"] = tminus
+        stats_df["fold"] = fold_idx
+        all_stats.append(stats_df)
+
+        X_test = sm.add_constant(test[alpha_cols])
+        y_pred = model.predict(X_test)
+
+        # 可选：保存预测值或其他评估指标
+        test["predicted"] = y_pred
+        final_df = pd.concat([final_df, test], ignore_index=True)
+
+        # 如有需要可画图或记录feature importance等
+
+    # 每个 tminus 结束后的可视化/打印等
