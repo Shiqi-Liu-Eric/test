@@ -1,21 +1,20 @@
+tminuses = result_df["T_minus"].unique()
+alpha_cols = [col for col in result_df.columns if col.startswith(bundle)]
+final_df = pd.DataFrame()
+all_stats = []
+
 for idx_t, tminus in enumerate(tminuses):
+    df_t = result_df[result_df["T_minus"] == tminus].copy()
+    folds = df_t["fold"].unique()
 
-    df = result_df[result_df["T_minus"] == tminus].copy()
-    df = df.sample(frac=1, random_state=42).reset_index(drop=True)  # optional shuffle
+    for fold_idx in folds:
+        test = df_t[df_t["fold"] == fold_idx].copy()
+        train_pool = df_t[df_t["fold"] != fold_idx].copy()
 
-    # 将df按fold数量划分为k份
-    k = 15
-    fold_size = len(df) // k
-    all_stats = []
+        # 随机打乱并取 80% 用作训练
+        train = train_pool.sample(frac=0.8, random_state=42).copy()
 
-    for fold_idx in range(k):
-        test_idx = range(fold_idx * fold_size, (fold_idx + 1) * fold_size)
-        test = df.iloc[test_idx].copy()
-        train_rest = df.drop(test_idx)
-
-        # 再从其余数据中抽取80%作为训练集
-        train = train_rest.sample(frac=0.8, random_state=fold_idx).copy()
-
+        # 训练
         X_train = sm.add_constant(train[alpha_cols])
         y_train = train[target]
 
@@ -28,13 +27,30 @@ for idx_t, tminus in enumerate(tminuses):
         stats_df["fold"] = fold_idx
         all_stats.append(stats_df)
 
+        # 测试并预测
         X_test = sm.add_constant(test[alpha_cols])
         y_pred = model.predict(X_test)
-
-        # 可选：保存预测值或其他评估指标
         test["predicted"] = y_pred
+
         final_df = pd.concat([final_df, test], ignore_index=True)
 
-        # 如有需要可画图或记录feature importance等
+        # 可选：打印模型表现
+        if tminus == 1:
+            print(f"\n=== T_minus {tminus - 1} Fold {fold_idx} ===")
+            print("Training size:", X_train.shape, "Testing size:", X_test.shape)
+            print("R^2:", model.rsquared, "Adj R^2:", model.rsquared_adj)
 
-    # 每个 tminus 结束后的可视化/打印等
+        # 可选：重要特征画图
+        p_vals = model.pvalues.drop("const", errors="ignore")
+        p_vals = p_vals.replace(0, 1e-10)
+        lr_importances = 1 / p_vals
+        indices = np.argsort(lr_importances)[-15:]
+        top_features = p_vals.index[indices]
+        top_importances = lr_importances[indices]
+
+        if idx_t == 0:  # 例如只画第一组的图
+            ax = axes[fold_idx]
+            ax.barh(top_features[::-1], np.log10(top_importances[::-1]), label="LR", alpha=0.6)
+            ax.set_title(f"T_minus {tminus-1} Fold {fold_idx}")
+            ax.set_xlabel("Importance")
+            ax.set_ylabel("Feature")
