@@ -1,28 +1,39 @@
 import pandas as pd
 
-# 第一步：读取 descriptor.csv 文件（跳过前三行，按 | 分列）
-df_descript = pd.read_csv("descriptor.csv", 
-                          sep='|', 
-                          skiprows=3, 
-                          names=['Barid', 'Descriptor', 'Value', 'DataDate', 'DescriptorType'])
+# 假设你已经有 df_fam
+# df_fam = pd.read_csv("your_fam_file.csv")
 
-# 去掉 Barid 中为空或以 '!' 开头的行
-df_descript = df_descript[df_descript['Barid'].notna()]
-df_descript = df_descript[~df_descript['Barid'].astype(str).str.startswith('!')]
+# 筛选出 FamilyID 为 VANGUARD-FTSE 的行
+df_vanguard = df_fam[df_fam['FamilyID'] == 'VANGUARD-FTSE']
 
-# 第二步：读取 ticker_meta.csv（包含 SEDOL 和 Name）
-df_meta = pd.read_csv("ticker_meta.csv")  # 确保这个文件包含 SEDOL 列
+# 获取这些行中的 SEDOL（去除缺失值）
+sedols_from_fam = df_vanguard['SEDOL'].dropna().unique()
 
-# 去掉 SEDOL 中的空值
-df_meta = df_meta[df_meta['SEDOL'].notna()]
+# 读取外部 CSV 文件
+external_df = pd.read_csv("your_external_file.csv", header=None)
 
-# 第三步：统计匹配
-sedol_set = set(df_meta['SEDOL'].astype(str).unique())
-barid_set = set(df_descript['Barid'].astype(str).unique())
+# 提取第一列
+column_data = external_df.iloc[:, 0]
 
-matched = sedol_set.intersection(barid_set)
+# 提取其中含有 "SEDOL" 的字段
+sedol_list = []
+for row in column_data:
+    parts = str(row).split('|')
+    for part in parts:
+        if 'SEDOL' in part:
+            value = part.split('SEDOL')[1]  # 获取 SEDOL 后面的值
+            value = value.strip(':| ')       # 去除多余字符
+            if value:
+                sedol_list.append(value)
 
-# 第四步：输出结果
-print(f"共有 {len(sedol_set)} 个唯一 SEDOL")
-print(f"其中有 {len(matched)} 个出现在 descriptor 文件中的 Barid 列")
-print(f"匹配比例为：{len(matched) / len(sedol_set):.2%}")
+# 去重
+sedol_list = set(sedol_list)
+
+# 匹配并计算比例
+match_count = sum([1 for sedol in sedols_from_fam if sedol in sedol_list])
+total_count = len(sedols_from_fam)
+match_ratio = match_count / total_count if total_count > 0 else 0
+
+print(f"匹配的 SEDOL 数量: {match_count}")
+print(f"总 SEDOL 数量: {total_count}")
+print(f"匹配比例: {match_ratio:.2%}")
