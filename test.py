@@ -1,121 +1,64 @@
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
+# ---------- 4. 创建每天的return序列（矢量化版本） ----------
 
-def plot_ftse_return(
-    df_fam,
-    ret1_sedol,
-    event_list,
-    family_id="VANGUARD-FTSE",
-    country_code=None,
-    add_del_up_down=[0, 0, 0, 0],
-    sub_index=None,
-    country_neut=False,
-    event_index=None,
-    event_type=None
-):
-    # ---------- 1. 参数清理 ----------
-    if isinstance(country_code, str):
-        country_code = [country_code]
-    if isinstance(sub_index, str):
-        sub_index = [sub_index]
-    if event_index is None:
-        event_index = ['FTSE', 'Russell', 'SP500', 'CRSP', 'MSCI']
-    if event_type is None:
-        event_type = ['ranking', 'announcement', 'effective']
+# 初始化返回值
+daily_ret = pd.Series(0.0, index=all_dates)
 
-    # ---------- 2. 过滤数据 ----------
-    df = df_fam[df_fam['FamilyID'] == family_id]
-    if country_code:
-        df = df[df['CountryOfIssue'].isin(country_code)]
+# 准备：所有交易日
+rebalance_dates = sorted(df['RebalanceTradeDate'].unique())
+rebalance_dates.append(all_dates[-1] + pd.Timedelta(days=1))  # 加上末尾
 
-    change_map = {'Down Weight': 0, 'Up Weight': 1, 'Delete': 2, 'Add': 3}
-    if any(add_del_up_down):
-        keep = [k for k, v in change_map.items() if add_del_up_down[v]]
-        df = df[df['Change'].isin(keep)]
+# 所有子表拼起来
+df_all = []
 
-    if sub_index:
-        df = df[df['INDEX'].isin(sub_index)]
+for i in range(len(rebalance_dates) - 1):
+    start = rebalance_dates[i]
+    end   = rebalance_dates[i + 1] - pd.Timedelta(days=1)
+    days  = all_dates[(all_dates >= start) & (all_dates <= end)]
 
-    df = df.dropna(subset=['SEDOL', 'RebalanceTradeDate', 'ProviderWeight - COB'])
-    df['RebalanceTradeDate'] = pd.to_datetime(df['RebalanceTradeDate'])
+    df_group = df[df['RebalanceTradeDate'] == start].copy()
+    if df_group.empty or days.empty:
+        continue
 
-    # ---------- 3. 时间范围 ----------
-    all_dates = ret1_sedol.columns
-    all_dates = all_dates[all_dates <= pd.Timestamp('2023-12-31')]
-    ret1_sedol = ret1_sedol.loc[:, all_dates]
+    # 为每一行生成对应的 Date 列（repeat + tile 方式展开）
+    repeated = pd.DataFrame({
+        'SEDOL': np.repeat(df_group['SEDOL'].values, len(days)),
+        'Weight': np.repeat(df_group['ProviderWeight - COB'].values, len(days)),
+        'Country': np.repeat(df_group['CountryOfIssue'].values, len(days)),
+        'Date': np.tile(days, len(df_group))
+    })
 
-    # ---------- 4. 创建每天的return序列 ----------
-    rebalance_dates = sorted(df['RebalanceTradeDate'].unique())
-    rebalance_dates.append(all_dates[-1] + pd.Timedelta(days=1))  # 处理最后一个区间
+    df_all.append(repeated)
 
-    daily_ret = pd.Series(0.0, index=all_dates)
+# 拼接所有重平衡区间
+df_all = pd.concat(df_all, ignore_index=True)
 
-    for i in range(len(rebalance_dates) - 1):
-        start = rebalance_dates[i]
-        end = rebalance_dates[i + 1] - pd.Timedelta(days=1)
-        date_range = all_dates[(all_dates >= start) & (all_dates <= end)]
+# 确保 Date 为字符串列以对应 ret1_sedol.columns
+df_all['Date'] = pd.to_datetime(df_all['Date'])
+df_all = df_all[df_all['Date'] <= pd.Timestamp("2023-12-31")]
 
-        df_group = df[df['RebalanceTradeDate'] == start]
+# 对应 ret 值
+ret_lookup = ret1_sedol.stack().rename("Return").reset_index()
+ret_lookup.columns = ['SEDOL', 'Date', 'Return']
+ret_lookup['Date'] = pd.to_datetime(ret_lookup['Date'])
 
-        for day in date_range:
-            day_str = str(day.date())
-            r_total = 0.0
-            for _, row in df_group.iterrows():
-                sedol = row['SEDOL']
-                weight = row['ProviderWeight - COB']
-                if sedol in ret1_sedol.index and day_str in ret1_sedol.columns:
-                    ret = ret1_sedol.at[sedol, day_str]
-                    if pd.notna(ret):
-                        r_total += weight * ret
-            # country neutral
-            if country_neut:
-                r_us = 0.0
-                for _, row in df_group[df_group['CountryOfIssue'] == 'United States'].iterrows():
-                    sedol = row['SEDOL']
-                    weight = row['ProviderWeight - COB']
-                    if sedol in ret1_sedol.index and day_str in ret1_sedol.columns:
-                        ret = ret1_sedol.at[sedol, day_str]
-                        if pd.notna(ret):
-                            r_us += weight * ret
-                r_total -= r_us
-            daily_ret.loc[day] = r_total
+# Merge 得到每行 return
+df_all = df_all.merge(ret_lookup, on=['SEDOL', 'Date'], how='left')
 
-    cum_ret = daily_ret.cumsum()
+# 可选：做 country neutral，先保存 US 的贡献
+if country_neut:
+    us_ret = (
+        df_all[df_all['Country'] == 'United States']
+        .assign(Prod=lambda x: x['Weight'] * x['Return'])
+        .groupby('Date')['Prod'].sum()
+    )
 
-    # ---------- 5. 事件累积收益 ----------
-    evt_dates = set()
-    for idx in event_index:
-        if idx not in event_list:
-            continue
-        for tp in event_type:
-            evt_dates.update(event_list[idx].get(tp, []))
+# 总收益
+df_all['Prod'] = df_all['Weight'] * df_all['Return']
+daily_ret = df_all.groupby('Date')['Prod'].sum().reindex(all_dates, fill_value=0.0)
 
-    evt_dates = pd.to_datetime(list(evt_dates))
-    evt_dates = evt_dates[(evt_dates >= all_dates[0]) & (evt_dates <= all_dates[-1])]
+# 如果是 country_neut，需要减去 US 部分
+if country_neut:
+    daily_ret = daily_ret - us_ret.reindex(all_dates, fill_value=0.0)
 
-    mask = daily_ret.index.isin(evt_dates)
-    cum_ret_evt = (daily_ret.where(mask, 0.0)).cumsum()
-
-    # ---------- 6. 绘图 ----------
-    fig, ax = plt.subplots(figsize=(12, 6))
-    ax.plot(daily_ret.index, daily_ret.values, lw=1.2, label='Daily total return')
-    ax.set_ylabel('Daily return')
-    ax.set_xlabel('Date')
-
-    ax2 = ax.twinx()
-    ax2.plot(cum_ret.index, cum_ret.values, color='tab:orange',
-             label='Cumulative return (all days)', lw=1.8)
-    ax2.plot(cum_ret_evt.index, cum_ret_evt.values, color='tab:green',
-             label=f'Cumulative return on event days', lw=1.8, linestyle='--')
-    ax2.set_ylabel('Cumulative return')
-
-    for d in evt_dates:
-        ax.axvline(d, linestyle=':', color='gray', alpha=0.3)
-
-    lines1, labels1 = ax.get_legend_handles_labels()
-    lines2, labels2 = ax2.get_legend_handles_labels()
-    ax2.legend(lines1 + lines2, labels1 + labels2, loc='upper left')
-    plt.title(f'FTSE Strategy Return — Family: {family_id}')
-    plt.tight_layout()
-    plt.show()
+# 累积
+cum_ret = daily_ret.cumsum()
