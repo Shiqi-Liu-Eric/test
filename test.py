@@ -1,70 +1,35 @@
 import pandas as pd
 import numpy as np
-from sklearn.linear_model import LinearRegression
-from sklearn.metrics import r2_score
-from xgboost import XGBRegressor
-import warnings
-warnings.filterwarnings('ignore')
 
-# -------------------- 配置 --------------------
-T_LAG = 49
-features = barra_names
-close = dfs['close']
+quantile_returns = {}
 
-def get_xy(date):
-    t0 = close.columns[close.columns.get_loc(date) - T_LAG]
-    y = close[date] / close[t0] - 1
-    X = pd.concat([dfs[f][t0] for f in features], axis=1, keys=features)
-    df = pd.concat([X, y.rename('ret')], axis=1).dropna()
-    return df[features], df['ret']
+for T in rebalance_dates:
+    T_50 = T - pd.Timedelta(days=50)
+    if T_50 not in dfs["RSTR"].columns or T not in dfs["close"].columns:
+        continue
 
-def quintile_perf(pred, ret):
-    q = pd.qcut(pred, 5, labels=False, duplicates='drop')
-    return ret.groupby(q).mean().reindex(range(5)).values
+    rstr_T50 = dfs["RSTR"][T_50]
+    close_T50 = dfs["close"][T_50]
+    close_T = dfs["close"][T]
 
-results = []
+    # 计算收益率
+    ret = (close_T / close_T50 - 1).dropna()
 
-for test_date in rebalance_dates:
-    X_test, y_test = get_xy(test_date)
-    train_dates = [d for d in rebalance_dates if d != test_date]
-    X_train = pd.concat([get_xy(d)[0] for d in train_dates])
-    y_train = pd.concat([get_xy(d)[1] for d in train_dates])
+    # 去掉RSTR或ret缺失值
+    valid_idx = rstr_T50.index.intersection(ret.index)
+    rstr_T50 = rstr_T50.loc[valid_idx]
+    ret = ret.loc[valid_idx]
 
-    # ------- Feature selection -------
-    lr_temp = LinearRegression().fit(X_train, y_train)
-    coef_series = pd.Series(np.abs(lr_temp.coef_), index=X_train.columns)
-    top10 = coef_series.nlargest(10).index.tolist()
+    # 分组
+    quantile_labels = ['Q1', 'Q2', 'Q3', 'Q4', 'Q5']
+    groups = pd.qcut(rstr_T50, q=5, labels=quantile_labels)
 
-    X_train_sel, X_test_sel = X_train[top10], X_test[top10]
+    # 计算每组平均收益
+    group_ret = ret.groupby(groups).mean()
+    quantile_returns[T] = group_ret
 
-    # ------- 1. 线性回归 -------
-    lr = LinearRegression().fit(X_train_sel, y_train)
-    pred_lr = pd.Series(lr.predict(X_test_sel), index=X_test_sel.index)
-    r2_lr = r2_score(y_test, pred_lr)
-    perf_lr = quintile_perf(pred_lr, y_test)
-    print(f"[LR] Fold: {test_date.date()}, R²: {r2_lr:.4f}, Top features: {top10}")
-    results.append([test_date, 'LR', r2_lr, *perf_lr])
+# 汇总为DataFrame
+result_df = pd.DataFrame(quantile_returns).T.sort_index()
 
-    # ------- 2. XGBoost -------
-    xgb = XGBRegressor(n_estimators=300, max_depth=3,
-                       learning_rate=0.05, subsample=0.8,
-                       colsample_bytree=0.8, objective='reg:squarederror',
-                       random_state=0)
-    xgb.fit(X_train_sel, y_train)
-    pred_xgb = pd.Series(xgb.predict(X_test_sel), index=X_test_sel.index)
-    r2_xgb = r2_score(y_test, pred_xgb)
-    perf_xgb = quintile_perf(pred_xgb, y_test)
-    print(f"[XGB] Fold: {test_date.date()}, R²: {r2_xgb:.4f}, Top features: {top10}")
-    results.append([test_date, 'XGB', r2_xgb, *perf_xgb])
-
-# -------------------- 输出 --------------------
-cols = ['fold', 'model', 'r2', 'Q1', 'Q2', 'Q3', 'Q4', 'Q5']
-perf_df = pd.DataFrame(results, columns=cols).set_index(['fold', 'model'])
-
-avg_perf = perf_df.groupby('model').mean().rename_axis('model')
-
-print("\n===== 每折表现 =====")
-print(perf_df)
-
-print("\n===== 平均表现（含R²）=====")
-print(avg_perf)
+# 添加最大组列
+result_df['BestGroup'] = result_df.idxmax(axis=1)
