@@ -1,46 +1,60 @@
 import pandas as pd
-import itertools
-import operator as op
+import numpy as np
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import mean_squared_error
+from xgboost import XGBRegressor
 
-T, lag = pd.Timestamp('2021-12-15'), 50
-t0_col = dfs['close'].columns[dfs['close'].columns.get_loc(T) - lag]
-
-# 定义需要用到的运算符
-ops = {
-    '+': op.add,
-    '-': op.sub,
-    '*': op.mul,
-    '/': op.truediv,          # 除零会得到 inf/NaN，稍后会 dropna
-}
-
-features = barra_names    # 你的 64 个特征名 list
-
+# -------------------- 基本配置 --------------------
+T_LAG = 50                       # 50 日收益
+features = barra_names           # 64 个 Barra 特征名 list
 close = dfs['close']
-ret_50d = close[T] / close[t0_col] - 1              # 预先算好 50 日收益
 
-rows = []                                           # 收集结果
+def get_xy(date):
+    """生成某一 rebalance date 的 (X, y) DataFrame"""
+    t0 = close.columns[close.columns.get_loc(date) - T_LAG]
+    y = close[date] / close[t0] - 1
+    X = pd.concat([dfs[f][t0] for f in features], axis=1, keys=features)
+    df = pd.concat([X, y.rename('ret')], axis=1).dropna()
+    return df[features], df['ret']
 
-for f1, f2 in itertools.combinations(features, 2): # 两两组合
-    s1, s2 = dfs[f1][t0_col], dfs[f2][t0_col]       # 取 T-50 当天截面
-    for sym, fn in ops.items():                     # 四种运算
-        expr = f'{f1} {sym} {f2}'
-        try:
-            factor = fn(s1, s2)                     # 逐元素计算
-        except Exception:
-            continue                                # 极端情况跳过
-        q = pd.qcut(factor, 5, labels=False, duplicates='drop')
-        grp_mean = (
-            pd.DataFrame({'q': q, 'r': ret_50d})
-              .dropna()
-              .groupby('q')['r']
-              .mean()
-              .reindex(range(5))                    # 确保 5 行
-        )
-        rows.append([expr, *grp_mean.values])
+def quintile_perf(pred, ret):
+    """按预测值分 5 组求组均收益，返回长度 5 的 ndarray"""
+    q = pd.qcut(pred, 5, labels=False, duplicates='drop')
+    return ret.groupby(q).mean().reindex(range(5)).values
 
-# 组装结果表：index 为表达式，列 Q1…Q5
-out = pd.DataFrame(
-    rows, columns=['expr', 'Q1','Q2','Q3','Q4','Q5']
-).set_index('expr')
+rebalance_dates = sorted(pd.to_datetime(df_fam[:, "RebalanceTradeDate"].unique()))
+results = []   # (fold, model, Q1..Q5)
 
-print(out)
+for test_date in rebalance_dates:                      # k-fold CV (leave-one-out on events)
+    # --- 组装 train / test ---
+    X_test, y_test = get_xy(test_date)
+    train_dates = [d for d in rebalance_dates if d != test_date]
+
+    X_train = pd.concat([get_xy(d)[0] for d in train_dates])
+    y_train = pd.concat([get_xy(d)[1] for d in train_dates])
+
+    # --- 1) 线性回归 ---
+    lr = LinearRegression().fit(X_train, y_train)
+    lr_perf = quintile_perf(pd.Series(lr.predict(X_test), index=X_test.index),
+                            y_test)
+    results.append([test_date, 'LR', *lr_perf])
+
+    # --- 2) XGBoost ---
+    xgb = XGBRegressor(n_estimators=300, max_depth=3,
+                       learning_rate=0.05, subsample=0.8, colsample_bytree=0.8,
+                       objective='reg:squarederror', random_state=0)
+    xgb.fit(X_train, y_train)
+    xgb_perf = quintile_perf(pd.Series(xgb.predict(X_test), index=X_test.index),
+                             y_test)
+    results.append([test_date, 'XGB', *xgb_perf])
+
+# -------------------- 输出 --------------------
+cols = ['fold', 'model', 'Q1', 'Q2', 'Q3', 'Q4', 'Q5']
+perf_df = pd.DataFrame(results, columns=cols).set_index(['fold', 'model'])
+
+# 各模型跨折平均表现
+avg_perf = perf_df.groupby('model').mean().rename_axis('model')
+
+print(perf_df)      # 每折分组收益
+print('\n===== 平均分组收益 =====')
+print(avg_perf)     # 平均分组收益
