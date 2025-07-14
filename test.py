@@ -1,67 +1,67 @@
 import pandas as pd
 import numpy as np
 from sklearn.linear_model import LogisticRegression
+from xgboost import XGBClassifier
 from sklearn.metrics import classification_report
 
-# 1. 读取 spy_close.csv
-spy = pd.read_csv('spy_close.csv', parse_dates=['date'])
+# --------- 读取 SPY 收盘价 ---------
+spy = pd.read_csv("spy_close.csv", parse_dates=['date'])
+spy = spy[['date', 'PX_LAST']].dropna()
 spy = spy.sort_values('date')
-spy['spy_return'] = spy['PX_LAST'].pct_change()
-spy['target'] = (spy['spy_return'] > 0).astype(int)
-spy = spy.dropna(subset=['target'])
+spy['spy_ret'] = spy['PX_LAST'].pct_change().shift(-1)    # 明日收益
+spy['target'] = (spy['spy_ret'] > 0).astype(int)
 
-# 2. 获取 country_ftse_globalallcap 的所有日期
+# 日期交集
+dates = pd.to_datetime(dfs['country_ftse_globalallcap'].columns)
+valid_dates = sorted(set(dates) & set(spy['date']))
+spy = spy[spy['date'].isin(valid_dates)].reset_index(drop=True)
+
+# --------- 计算 US 股票掩码 ---------
 country_df = dfs['country_ftse_globalallcap']
-us_dates = country_df.index
+us_mask = (country_df == 'US').astype(float)              # 1 表示 US 股票，其它为 0
 
-# 3. 只保留在 spy_close 和 country_ftse_globalallcap 的日期交集
-common_dates = spy['date'][spy['date'].isin(us_dates)]
-spy = spy[spy['date'].isin(common_dates)].reset_index(drop=True)
-
-# 4. 特征构建
+# --------- 构造特征 ---------
 features = []
-for descriptor in unique_descriptors:
-    df = dfs[descriptor]
-    # 只保留 US 股票
-    us_df = df[df['country'] == 'US']
-    # 按日期分组求和
-    daily_sum = us_df.groupby(us_df.index).sum()
-    # 1天差分特征
-    diff1 = daily_sum - daily_sum.shift(1)
-    diff1.columns = [f'{descriptor}_diff1']
-    # 3天和减去4-6天和
-    sum3 = daily_sum.rolling(3).sum()
-    sum4_6 = daily_sum.shift(3).rolling(3).sum()
-    diff3_6 = sum3 - sum4_6
-    diff3_6.columns = [f'{descriptor}_diff3_6']
-    # 合并
-    feature_df = pd.concat([diff1, diff3_6], axis=1)
-    features.append(feature_df)
+for t in range(6, len(valid_dates)-1):  # 确保有足够过去的数据
+    date = valid_dates[t]
+    t_idx = list(dates).index(date)
 
-# 合并所有特征
-feature_all = pd.concat(features, axis=1)
-feature_all = feature_all.loc[common_dates]
+    feat1 = []  # 当日总和 - 昨日总和
+    feat2 = []  # T-1~T-3总和 - T-4~T-6总和
 
-# 5. 对齐 target
-feature_all = feature_all.reset_index()
-feature_all['date'] = feature_all['index']
-feature_all = feature_all.drop('index', axis=1)
-data = pd.merge(feature_all, spy[['date', 'target']], on='date', how='inner')
-data = data.dropna()
+    for f in unique_descriptors:
+        df = dfs[f].fillna(0)
 
-# 6. 划分训练/测试集
-train = data[(data['date'] >= '2021-01-01') & (data['date'] < '2023-01-01')]
-test = data[(data['date'] >= '2023-01-01') & (data['date'] <= '2023-12-31')]
+        cur = (df.iloc[:, t_idx] * us_mask.iloc[:, t_idx]).sum()
+        prev = (df.iloc[:, t_idx-1] * us_mask.iloc[:, t_idx-1]).sum()
+        feat1.append(cur - prev)
 
-X_train = train.drop(['date', 'target'], axis=1)
-y_train = train['target']
-X_test = test.drop(['date', 'target'], axis=1)
-y_test = test['target']
+        sum_recent = sum((df.iloc[:, t_idx-i] * us_mask.iloc[:, t_idx-i]).sum() for i in range(1, 4))
+        sum_past = sum((df.iloc[:, t_idx-i] * us_mask.iloc[:, t_idx-i]).sum() for i in range(4, 7))
+        feat2.append(sum_recent - sum_past)
 
-# 7. 训练模型
-clf = LogisticRegression(max_iter=1000)
-clf.fit(X_train, y_train)
+    features.append([date] + feat1 + feat2)
 
-# 8. 预测与评估
-y_pred = clf.predict(X_test)
-print(classification_report(y_test, y_pred))
+# --------- 构造 DataFrame ---------
+columns = ['date'] + [f'{f}_diff1' for f in unique_descriptors] + [f'{f}_diff3vs6' for f in unique_descriptors]
+X = pd.DataFrame(features, columns=columns)
+X = X.merge(spy[['date', 'target']], on='date').dropna()
+
+# --------- 划分训练集和测试集 ---------
+X_train = X[X['date'].dt.year.isin([2021, 2022])].drop(columns=['date'])
+X_test  = X[X['date'].dt.year == 2023].drop(columns=['date'])
+
+y_train = X_train.pop('target')
+y_test  = X_test.pop('target')
+
+# --------- 训练模型 ----------
+# 1. Logistic Regression
+lr = LogisticRegression(max_iter=1000).fit(X_train, y_train)
+print("Logistic Regression:")
+print(classification_report(y_test, lr.predict(X_test)))
+
+# 2. XGBoost Classifier
+xgb = XGBClassifier(use_label_encoder=False, eval_metric='logloss')
+xgb.fit(X_train, y_train)
+print("XGBoost Classifier:")
+print(classification_report(y_test, xgb.predict(X_test)))
