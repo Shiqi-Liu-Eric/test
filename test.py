@@ -4,62 +4,74 @@ from sklearn.linear_model import LogisticRegression
 from xgboost import XGBClassifier
 from sklearn.metrics import classification_report
 
-# ========== 读取 SPY 收盘价 ========== #
+# ===== Step 1: 读取 SPY 收盘价 ===== #
 spy = pd.read_csv("spy_close.csv", parse_dates=['date'])
 spy = spy[['date', 'PX_LAST']].dropna().sort_values('date')
 spy['spy_ret'] = spy['PX_LAST'].pct_change().shift(-1)
 spy['target'] = (spy['spy_ret'] > 0).astype(int)
 
-# ========== 对齐日期 ========== #
+# ===== Step 2: 日期对齐 ===== #
 dates = pd.to_datetime(dfs['country_ftse_globalallcap'].columns)
 valid_dates = sorted(set(dates) & set(spy['date']))
 dates = np.array(valid_dates)
 spy = spy[spy['date'].isin(valid_dates)].reset_index(drop=True)
 
-# ========== 构造 US 掩码矩阵 ========== #
+# ===== Step 3: 构造 US 掩码和 Feature 总和 ===== #
 country_df = dfs['country_ftse_globalallcap'].loc[:, dates]
-us_mask = (country_df == 'US').astype(float).values  # shape = (N_stocks, N_days)
+us_mask = (country_df == 'US').astype(float).values  # shape: (N_stocks, N_days)
 
-# ========== 构造 Barra 特征张量 ========== #
+# 生成 shape = (64, N_stocks, N_days)
 feature_tensor = np.array([
-    dfs[f].loc[:, dates].fillna(0).values * us_mask for f in unique_descriptors
-])  # shape = (64, N_stocks, N_days)
-
-# ========== 每个特征的总和（对股票维求和） ========== #
-feature_sum = feature_tensor.sum(axis=1)  # shape = (64, N_days)
-
-# ========== 构造两个特征集 ========== #
-# 1. 当天 - 前一天
-diff1 = feature_sum[:, 1:] - feature_sum[:, :-1]  # shape = (64, N_days - 1)
-
-# 2. T-1~T-3 - T-4~T-6
-sum_recent = feature_sum[:, 2:-3] + feature_sum[:, 3:-2] + feature_sum[:, 4:-1]
-sum_past   = feature_sum[:, -6:-3] + feature_sum[:, -5:-2] + feature_sum[:, -4:-1]
-diff3vs6   = sum_recent - sum_past  # shape = (64, N_days - 6)
-
-# ========== 对齐并拼接 ========== #
-min_len = min(diff1.shape[1], diff3vs6.shape[1])  # 防止越界
-X_all = np.concatenate([diff1[:, -min_len:], diff3vs6[:, -min_len:]], axis=0).T  # shape = (days, 128)
-X_dates = dates[6:6 + min_len]
-
-# ========== 构造特征 DataFrame ========== #
-X_df = pd.DataFrame(X_all, columns=[
-    f'{f}_diff1' for f in unique_descriptors
-] + [
-    f'{f}_diff3vs6' for f in unique_descriptors
+    dfs[f].loc[:, dates].fillna(0).values * us_mask
+    for f in unique_descriptors
 ])
-X_df['date'] = X_dates
 
-# 合并 target（SPY）
-X_df = X_df.merge(spy[['date', 'target']], on='date').dropna()
+# shape: (64, N_days), 每个因子每天 US 股票总和
+feature_sum = feature_tensor.sum(axis=1)
 
-# ========== 划分训练和测试集 ========== #
+# ===== Step 4: 构造 diff1 和 diff3vs6 特征 ===== #
+# 使用 pandas DataFrame 构造滑动窗口
+fs_df = pd.DataFrame(
+    feature_sum.T, index=dates, columns=unique_descriptors
+)
+
+# diff1 = 当天 - 昨天
+diff1_df = fs_df.diff()
+
+# diff3vs6 = 2 × T-1~T-3 总和 − T-1~T-6 总和
+sum_1_3 = fs_df.rolling(3).sum().shift(1)
+sum_1_6 = fs_df.rolling(6).sum().shift(1)
+diff3vs6_df = 2 * sum_1_3 - sum_1_6
+
+# 只保留两者都有值的日期（第 6 天以后）
+valid_idx = diff3vs6_df.index[5:]
+
+feat_df = pd.concat(
+    [diff1_df.loc[valid_idx], diff3vs6_df.loc[valid_idx]],
+    axis=1,
+    keys=['diff1', 'diff3vs6']
+).dropna()
+
+# 列名展平为 diff1_factorA, diff3vs6_factorA, ...
+feat_df.columns = [
+    f'{grp}_{col}' for grp, col in feat_df.columns.to_flat_index()
+]
+
+# ===== Step 5: 合并 SPY target，准备建模数据 ===== #
+X_df = (
+    feat_df.reset_index()
+           .merge(spy[['date', 'target']], left_on='index', right_on='date')
+           .drop(columns=['index'])
+           .dropna()
+)
+
+# ===== Step 6: 划分训练集和测试集（2023 年为测试） ===== #
 X_train = X_df[X_df['date'].dt.year.isin([2021, 2022])].drop(columns=['date'])
 X_test  = X_df[X_df['date'].dt.year == 2023].drop(columns=['date'])
 y_train = X_train.pop('target')
 y_test  = X_test.pop('target')
 
-# ========== 模型训练和评估 ========== #
+# ===== Step 7: 模型训练与评估 ===== #
 print("\n📘 Logistic Regression:")
 lr = LogisticRegression(max_iter=1000)
 lr.fit(X_train, y_train)
