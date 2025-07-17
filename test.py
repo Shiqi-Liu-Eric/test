@@ -1,42 +1,48 @@
-from pandas.tseries.offsets import BDay
+# 绘图部分开始
+legend_handles = {}
+for i, country in enumerate(all_countries):
+    for j, industry in enumerate(all_industries):
+        ax = fig.add_subplot(gs[i, j])
 
-def print_group_counts(dfs, map_df, rebalance_dates, window_size=50, plot_list=["Add", "Delete", "Up Weight", "Down Weight"]):
-    close_df = dfs["close"]
-    weight_df = dfs["weight_ftse_globalallcap"]
-    event_action_df = dfs["event_action"]
-    country_df = dfs["country_ftse_globalallcap"].copy()
-
-    reference_idx = -400 if country_df.shape[1] > 400 else -1
-    ref_date = country_df.columns[reference_idx]
-    top_countries = country_df[ref_date].value_counts().nlargest(12).index.tolist()
-    country_df = country_df.applymap(lambda x: x if x in top_countries else "Others")
-
-    all_countries = top_countries
-    all_industries = sorted(map_df["industry_sector"].unique())
-
-    for r_date in rebalance_dates:
-        print(f"\n=== Rebalance Date: {r_date} ===")
-        T = pd.to_datetime(r_date)
-        if T not in close_df.columns:
+        if (i, j) not in cache_result:
+            ax.set_xticks([])
+            ax.set_yticks([])
+            ax.set_xlim(0, window_size - 1)
+            ax.set_ylim(0, 1)
             continue
-        T_idx = close_df.columns.get_loc(T)
-        T_minus_5 = close_df.columns[close_df.columns.get_indexer([T - BDay(5)], method="nearest")[0]]
-        valid_tickers = weight_df.loc[:, T_minus_5].dropna().index
 
-        for country in all_countries:
-            for industry in all_industries:
-                tickers_in_group = [
-                    t for t in valid_tickers
-                    if country_df.loc[t, T] == country and map_df.loc[t, "industry_sector"] == industry
-                ]
-                if not tickers_in_group:
-                    continue
+        result = cache_result[(i, j)]
+        for grp, series in result.items():
+            line, = ax.plot(range(window_size), series, label=grp, linewidth=1)
 
-                print(f"\nGroup ({country}, {industry}):")
-                for grp in plot_list + ["All"]:
-                    if grp == "All":
-                        count = len(tickers_in_group)
-                    else:
-                        action_day = event_action_df.columns[event_action_df.columns.get_indexer([T - BDay(5)], method="nearest")[0]]
-                        count = sum(event_action_df.loc[t, action_day] == grp for t in tickers_in_group)
-                    print(f"  {grp}: {count} tickers")
+            # 第一次出现该组时记录 handle，用于 legend
+            if grp not in legend_handles:
+                legend_handles[grp] = line
+
+        # 三条虚线标记
+        ax.axvline(x=0, linestyle=":", color="black", alpha=0.4)  # T-50
+        ax.axvline(x=window_size - 20, linestyle="--", color="gray", alpha=0.5)  # T-20
+        ax.axvline(x=window_size - 1, linestyle=":", color="black", alpha=0.4)  # T
+
+        ax.set_xticks([0, window_size - 20, window_size - 1])
+        ax.set_xticklabels(["", "", ""])
+        ax.tick_params(labelsize=6)
+
+        if scale:
+            ax.set_ylim(global_min, global_max)
+
+        # 行名和列名
+        if j == 0:
+            ax.set_ylabel(country, fontsize=9, rotation=0, labelpad=25, va='center')
+        if i == 0:
+            ax.set_title(industry, fontsize=9)
+
+# 添加 legend：只显示实际画出来的组
+fig.legend(
+    handles=[legend_handles[k] for k in legend_handles],
+    labels=[k for k in legend_handles],
+    loc='upper center',
+    ncol=len(legend_handles)
+)
+fig.suptitle("Group Weighted Returns by Country and Industry", fontsize=14)
+plt.show()
