@@ -1,1 +1,3 @@
-returns = close_df.loc[valid_tickers_k, date].pct_change().where(lambda x: ((close_df.loc[valid_tickers_k, date] != 0) & close_df.loc[valid_tickers_k, date].notna()).all(axis=1), 0).fillna(0)
+returns = (close_df.loc[valid_tickers_k, date] / close_df.loc[valid_tickers_k, date - pd.offsets.BDay(1)]).where(
+    (close_df.loc[valid_tickers_k, date] != 0) & (close_df.loc[valid_tickers_k, date - pd.offsets.BDay(1)] != 0) & 
+    close_df.loc[valid_tickers_k, date].notna() & close_df.loc[valid_tickers_k, date - pd.offsets.BDay(1)].notna(), 1) - 1
