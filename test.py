@@ -1,180 +1,118 @@
-# -*- coding: utf-8 -*-
-"""
-Author : Verse – MSC I 2025
-Target : ① 生成原始 (raw) 挂单/成交特征  
-         ② 计算不平衡类 signal α 因子  
-         ③ 把每个特征/因子存成与 ret1 同维度 (8021×T) 的 DataFrame，并以 pickle 持久化  
-环境 : bmll‑api v≥3.9 ；pandas 2.2+；pyspark 已在 BMLL Data Lab 预装
----------------------------------------------------------------------------
-★ 如只在本地 IDE 运行，请先执行  >>>  pip install bmll pandas pyarrow pyspark
-"""
-
-import os
-import pickle
-from pathlib import Path
-import numpy as np
+# ------------------------------------------------------------
+# 0. 环境与输入：df_id_map, ret1, date_list 已预加载
+# ------------------------------------------------------------
 import pandas as pd
+import numpy as np
+from pathlib import Path
 from pandas.tseries.offsets import BDay
-from bmll2 import get_market_data, get_market_data_range          # 官方 API
-import pyspark.sql.functions as F                                  # Spark 聚合
 
-# --------------------------------------------------------------------------
-# 0. 读入基础表
-# --------------------------------------------------------------------------
-DATA_DIR   = Path("./feature_pickle")      # 保存位置
-DATA_DIR.mkdir(exist_ok=True)
+from bmll2 import get_market_data_range           # Spark DF
+import pyspark.sql.functions as F
 
-df_id_map  = pd.read_pickle("df_id_map.pkl")     # 两列 [SEDOL, ISIN]，index=ticker
-ret1       = pd.read_pickle("ret1.pkl")          # 8021 × T 的收益矩阵
-date_list  = pd.read_pickle("date_list.pkl")     # pd.Timestamp 列表 (effective date)
+OUT_DIR = Path("features")        # 保存目录
+OUT_DIR.mkdir(exist_ok=True)
 
-# 只保留 MSCI 代码后两位为 UN/UW (= US 本土挂牌) 的股票
-us_mask          = df_id_map.index.str[-2:].isin(["UN", "UW"])
-valid_tickers    = df_id_map.index[us_mask]
-ret1             = ret1.loc[valid_tickers]       # 保证行顺序一致
+# ------------------------------------------------------------
+# 1. 选出美国股票行，并创建所有空壳 DF
+# ------------------------------------------------------------
+# 1.1 过滤 index 末两位为 UN / UW
+mask_us = df_id_map.index.str.endswith(("UN", "UW"))
+tickers_us = df_id_map.index[mask_us]
 
-all_dates        = ret1.columns                  # Business‑Day datetime64[ns]
-markets_us       = ["XNAS", "XNYS"]              # Nasdaq & NYSE 主场
+# 1.2 基准形状 (行 = 8000+ ticker, 列 = ret1 的所有交易日)
+shape_base = ret1.copy(deep=False) * np.nan        # 仅占位，不复制数据
+shape_base = shape_base.loc[tickers_us]            # 仅保留美股行
 
-# --------------------------------------------------------------------------
-# 1. ===============  生成 RAW 特征  ========================================
-# --------------------------------------------------------------------------
-RAW_NAMES = ["VolAsk5", "VolBid5", "VolImb",
-             "Spread", "Depth1"]                 # 你可再追加其他底层字段
+# 用字典装所有 DF
+raw_dfs = {}
+sig_dfs = {}
 
-raw_dfs   = {nm: pd.DataFrame(index=valid_tickers, columns=all_dates, dtype="float32")
-             for nm in RAW_NAMES}
+# ------------------------------------------------------------
+# 2. 批量抓 L2 深度 → Raw Features
+# ------------------------------------------------------------
+def fetch_l2_depth(mics, start, end):
+    """一次性抓多 market、多日 L2，并在 Spark 内部聚合为每日每股票顶档数量和不平衡"""
+    spark_df = get_market_data_range(
+        markets=mics,
+        start_date=start.strftime('%Y-%m-%d'),
+        end_date=end.strftime('%Y-%m-%d'),
+        table="l2",
+        columns=(["TradeDate", "Ticker"] +
+                 [f"BidQuantity{i}" for i in range(1, 6)] +
+                 [f"AskQuantity{i}" for i in range(1, 6)])
+    )
 
-def _pull_l2_single_day(mic: str, dt: pd.Timestamp) -> pd.DataFrame:
-    """
-    拉取某市场某天的 L2 挂单表（只顶 5 档 + 价差）并做必要字段转换
-    """
-    cols = ["Ticker",
-            "BidPrice1", "AskPrice1",
-            *[f"BidQuantity{i}" for i in range(1, 6)],
-            *[f"AskQuantity{i}" for i in range(1, 6)]]
-
-    df = get_market_data(mic, dt.strftime("%Y-%m-%d"), "l2", columns=cols, df_engine="pandas")
-    return df
-
-def _build_raw_feature(l2_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    根据单日 L2 表构造 raw → 返回 [Ticker, RAW_NAMES...]  DataFrame
-    """
-    bid_cols = [f"BidQuantity{i}" for i in range(1, 6)]
-    ask_cols = [f"AskQuantity{i}" for i in range(1, 6)]
-
-    out               = pd.DataFrame(index=l2_df["Ticker"].values)
-    out["VolBid5"]    = l2_df[bid_cols].sum(axis=1).values
-    out["VolAsk5"]    = l2_df[ask_cols].sum(axis=1).values
-    out["VolImb"]     = (out["VolBid5"] - out["VolAsk5"]) / (out["VolBid5"] + out["VolAsk5"])
-    out["Spread"]     = (l2_df["AskPrice1"].values - l2_df["BidPrice1"].values)
-    out["Depth1"]     = l2_df["BidQuantity1"].values + l2_df["AskQuantity1"].values
-    return out
-
-print("--> Start building RAW features")
-for d in all_dates:
-    # 拼接 2 个 venue 的 L2 后再 groupby 平均
-    l2_concat = pd.concat([_pull_l2_single_day(mic, d) for mic in markets_us],
-                          ignore_index=True)
-    raw_day   = (_build_raw_feature(l2_concat)
-                 .groupby(level=0).mean())                       # 合并 XNAS+XNYS
-
-    # 写入大矩阵
-    for nm in RAW_NAMES:
-        raw_dfs[nm].loc[raw_day.index, d] = raw_day[nm].values
-
-    print(f"  ✅ raw @{d.date()}  done")
-
-# 保存 RAW
-for nm, df in raw_dfs.items():
-    df.astype("float32").to_pickle(DATA_DIR / f"RAW_{nm}.pkl")
-print("--> RAW pickle saved\n")
-
-# --------------------------------------------------------------------------
-# 2. ===============  计算 Signal α 因子  ===================================
-#   仅在 5‑day 预调仓窗 (T‑5 ~ T‑1) 计算，其他日期填 NA
-# --------------------------------------------------------------------------
-# 2.1 窗口日期集合
-windows = set()
-for eff in date_list:
-    windows.update(pd.bdate_range(eff - BDay(5), eff - BDay(1)))
-window_dates = sorted(windows)                        # List[pd.Timestamp]
-
-# 2.2 Spark‑based 批量拉 L2 / L3 / trades  (跨月 → Spark 更快)
-spark = None   # Data Lab 默认已提供 spark session，若本地则需自己 from pyspark.sql import SparkSession
-try:
-    from pyspark.sql import SparkSession
-    spark = SparkSession.builder.getOrCreate()
-except Exception:
-    pass  # 若在 Data Lab 里会自动获取
-
-# ---------------- Signal 容器 ---------------
-SIG_NAMES  = ["QImb_Top5", "HiddenRatio", "MOC_Imb_RelADV",
-              "Auct_Dislc", "Kyle_Lambda", "OI_sigma", "Spread_Depth"]
-sig_dfs    = {nm: pd.DataFrame(index=valid_tickers, columns=all_dates, dtype="float32")
-              for nm in SIG_NAMES}
-
-# ------------------- 工具函数 -----------------
-def spark_l2_day(mics, dt):
-    """
-    利用 get_market_data_range 拉多市场同日 L2，返回 Spark DF
-    """
-    return get_market_data_range(mics, dt.strftime("%Y-%m-%d"), dt.strftime("%Y-%m-%d"),
-                                 "l2",
-                                 columns=["Ticker", "EventTimestamp",
-                                          "BidPrice1", "AskPrice1",
-                                          *[f"BidQuantity{i}" for i in range(1, 6)],
-                                          *[f"AskQuantity{i}" for i in range(1, 6)]])
-
-def calc_qimb_top5(l2_spark):
+    # Spark 侧计算五档合计
     bid_sum = sum(F.col(f"BidQuantity{i}") for i in range(1, 6))
     ask_sum = sum(F.col(f"AskQuantity{i}") for i in range(1, 6))
-    df = (l2_spark
-          .withColumn("VolBid5", bid_sum)
-          .withColumn("VolAsk5", ask_sum)
-          .withColumn("VolImb", (F.col("VolBid5") - F.col("VolAsk5")) /
-                               (F.col("VolBid5") + F.col("VolAsk5")))
-          # 尾盘 15:30‑15:59 (US Eastern) —— 时间字段已是 venue local；改成 HH:MM:SS 字符串即可
-          .where("substring(EventTimestamp,12,5) between '15:30' and '15:59'")
-          .groupBy("Ticker")
-          .agg(F.avg("VolImb").alias("QImb_Top5")))
-    return df
 
-def calc_spread_depth(l2_spark):
-    df = (l2_spark
-          .withColumn("Spread", F.col("AskPrice1") - F.col("BidPrice1"))
-          .withColumn("Depth1", F.col("BidQuantity1") + F.col("AskQuantity1"))
-          .withColumn("Spread_Depth", F.col("Spread") / F.col("Depth1"))
-          .groupBy("Ticker").agg(F.avg("Spread_Depth").alias("Spread_Depth")))
-    return df
+    res = (spark_df
+           .withColumn("VolBid5", bid_sum)
+           .withColumn("VolAsk5", ask_sum)
+           .withColumn("VolImb", (F.col("VolBid5") - F.col("VolAsk5")) /
+                                 (F.col("VolBid5") + F.col("VolAsk5")))
+           .groupBy("TradeDate", "Ticker")                 # 日聚合
+           .agg(
+               F.avg("VolBid5").alias("VolBid5"),
+               F.avg("VolAsk5").alias("VolAsk5"),
+               F.avg("VolImb").alias("VolImb")
+           ))
 
-# ------------- 主循环：仅跑 window_dates -----------
-print("--> Start computing SIGNAL features (T-5  window only)")
-for d in window_dates:
-    l2_spark = spark_l2_day(markets_us, d)
+    return res.toPandas()      # 行数≈|ticker|×|days|，已足够小可转 Pandas
 
-    # = QImb_Top5 =
-    qimb_df = calc_qimb_top5(l2_spark).toPandas().set_index("Ticker")
-    sig_dfs["QImb_Top5"].loc[qimb_df.index, d] = qimb_df["QImb_Top5"].values
 
-    # = Spread_Depth =
-    sd_df   = calc_spread_depth(l2_spark).toPandas().set_index("Ticker")
-    sig_dfs["Spread_Depth"].loc[sd_df.index, d] = sd_df["Spread_Depth"].values
+# 2.1 定义抓取时间范围：ret1.columns 最小/最大
+start_dt, end_dt = ret1.columns.min(), ret1.columns.max()
+depth_df = fetch_l2_depth(["XNAS", "XNYS"], start_dt, end_dt)
 
-    # >>> 其余 HiddenRatio / Kyle_Lambda / MOC 等因子因为
-    # >>> 需要 L3 / trades / auction feed，可在此处按与你前面 notebook
-    # >>> 一致的逻辑写 Spark SQL 聚合，流程完全相同：withColumn → groupBy → avg
-    # >>> 计算完再 toPandas() → 写入 sig_dfs[...]  (示例略)
-    # ----------------------------------------------------------
-    print(f"  ✅ signal @{d.date()}  done")
+# 2.2 转成透视表，并写入 raw_dfs 空壳
+for col in ["VolBid5", "VolAsk5", "VolImb"]:
+    tmp = depth_df.pivot(index="Ticker", columns="TradeDate", values=col)
+    # 对齐形状并写入
+    df_feat = shape_base.copy()
+    df_feat.update(tmp)
+    raw_dfs[col] = df_feat
+    df_feat.to_pickle(OUT_DIR / f"raw_{col}.pkl")
 
-# 保存 SIGNAL
-for nm, df in sig_dfs.items():
-    df.astype("float32").to_pickle(DATA_DIR / f"SIG_{nm}.pkl")
-print("--> SIGNAL pickle saved")
+# 👉 如需额外 Raw Feature，仿照上面在 Spark 里新增列计算即可
+#    例如 Spread_Depth、HiddenRatio 等，然后再 pivot/update
 
-# --------------------------------------------------------------------------
-# Done!  你现在在 ./feature_pickle/ 下可看到：
-#   RAW_VolAsk5.pkl, RAW_VolBid5.pkl, ... , SIG_QImb_Top5.pkl, ...
-# --------------------------------------------------------------------------
+# ------------------------------------------------------------
+# 3. 计算 Signal Features（仅 T-5~T-1）
+# ------------------------------------------------------------
+# 3.1 预先生成每个 rebalance window 的“待计算日期”集合
+windows = {eff: pd.bdate_range(eff - 5*BDay(), eff - BDay()) for eff in date_list}
+all_need_dates = sorted(set.union(*map(set, windows.values())))
+
+# 3.2 从 raw feature 直接衍生信号 —— 以 VolImb → Q_Imb_Top5 为例
+#     其他信号（Kyle_Lambda, MOC_Imb_RelADV, Spread_Depth...）
+#     可在 2. 的 Spark 中算完后再做 rolling / cross-sec 等聚合
+def zscore_cross_sec(df_day):
+    """横截面去极值(z)的小工具"""
+    s = df_day.clip(lower=df_day.quantile(0.01), upper=df_day.quantile(0.99))
+    return (s - s.mean()) / s.std(ddof=0)
+
+sig_QImb = shape_base.copy()
+
+for dt in all_need_dates:
+    vec = raw_dfs["VolImb"][dt]             # 系列，index=ticker
+    sig_QImb[dt] = zscore_cross_sec(vec)    # 横截面 zscore
+
+sig_dfs["QImb_Top5"] = sig_QImb
+sig_QImb.to_pickle(OUT_DIR / "sig_QImb_Top5.pkl")
+
+# 👉 若要额外因子：Kyle_Lambda, Auct_Dislc...
+#    1. 在 Raw 阶段多算对应原始字段或分钟条
+#    2. 在此处写 rolling / 斜率 / 交互项逻辑
+#    3. 同样 update 进对应 sig_df，pickle 即可
+
+# ------------------------------------------------------------
+# 4. （可选）一次性保存所有 DF
+# ------------------------------------------------------------
+for name, df in raw_dfs.items():
+    df.to_pickle(OUT_DIR / f"raw_{name}.pkl")
+
+for name, df in sig_dfs.items():
+    df.to_pickle(OUT_DIR / f"sig_{name}.pkl")
+
+print(f"✅ 已生成 {len(raw_dfs)} 个 Raw & {len(sig_dfs)} 个 Signal feature，保存在 {OUT_DIR.resolve()}")
