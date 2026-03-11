@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<backtest>
+    <meta>
+        <name>alpha_funda_01</name>
+        <description>Fundamental Alpha: ROE / PE^2 (value-quality composite)</description>
+        <author>SL</author>
+    </meta>
+    <alpha>
+        <module>alpha_factory.alpha_funda_01</module>
+        <AlphaInfo name="funda_01" category="fundamental" instrument="equity" region="us" intervalmode="daily"/>
+    </alpha>
+    <universe>
+        <index>sp500</index>
+        <max_stocks>50</max_stocks>
+    </universe>
+    <dates>
+        <start>2020-01-01</start>
+        <end>2025-12-31</end>
+    </dates>
+    <parameters>
+        <long_short>true</long_short>
+        <rebalance_frequency>daily</rebalance_frequency>
+    </parameters>
+    <costs>
+        <commission_bps>0</commission_bps>
+        <slippage_bps>0</slippage_bps>
+    </costs>
+    <ir_benchmark>
+        <type>SPY</type>
+    </ir_benchmark>
+    <sharpe_benchmark>
+        <type>risk_free</type>
+    </sharpe_benchmark>
+    <output>
+        <print_stats>true</print_stats>
+        <print_summary_table>true</print_summary_table>
+        <print_daily_detail>false</print_daily_detail>
+        <plot_equity_curve>true</plot_equity_curve>
+        <plot_group_returns>true</plot_group_returns>
+        <save_pnl>true</save_pnl>
+    </output>
+</backtest>

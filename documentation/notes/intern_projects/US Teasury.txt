@@ -1,0 +1,4 @@
+T-Bill's: 4w - 1y
+T-note: 2-10y
+T-Bonds: >10y
+

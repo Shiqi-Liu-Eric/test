@@ -1,0 +1,276 @@
+<backtest>
+
+  <meta>
+    <name>alpha_global</name>
+    <description>Global alpha backtest framework template</description>
+    <author>Shiqi Liu</author>
+  </meta>
+
+  <!-- ===== Universe =====
+       Supported <index> values:
+
+       ── Direct FMP Constituent APIs ──
+       sp500            S&P 500  (~503 stocks)
+       nasdaq           Nasdaq Composite  (~3000+)
+       dowjones         Dow Jones Industrial Average  (30 stocks)
+
+       ── US Broad Market (via ETF Holdings) ──
+       russell1000      Russell 1000  (large-cap, ETF: IWB)
+       russell2000      Russell 2000  (small-cap, ETF: IWM)
+       russell3000      Russell 3000  (broad, ETF: IWV)
+       crsp_total       CRSP US Total Market / Vanguard Total Stock Mkt (ETF: VTI)
+       midcap400        S&P MidCap 400  (ETF: MDY)
+       smallcap600      S&P SmallCap 600  (ETF: SLY)
+
+       ── MSCI Global ──
+       msci_acwi        MSCI All Country World Index  (ETF: ACWI)
+       msci_world       MSCI World  (developed markets, ETF: URTH)
+       msci_eafe        MSCI EAFE (developed ex-US, ETF: EFA)
+       msci_em          MSCI Emerging Markets  (ETF: EEM)
+
+       ── FTSE Global ──
+       ftse_global      FTSE Global All Cap / Total World  (ETF: VT)
+       ftse_dev_ex_us   FTSE Developed Markets ex-US  (ETF: VEA)
+       ftse_ex_us       FTSE All-World ex-US  (ETF: VEU)
+       ftse_em          FTSE Emerging Markets  (ETF: VWO)
+
+       ── Custom ──
+       Any ETF ticker   e.g. <index>XLK</index> uses XLK holdings (Tech sector)
+                        e.g. <index>QQQ</index> uses QQQ holdings (Nasdaq-100)
+
+       Use <max_stocks> to cap the universe size.
+  -->
+  <universe>
+    <index>sp500</index>
+    <!-- <max_stocks>50</max_stocks> -->
+  </universe>
+
+  <!-- ===== Date Range ===== -->
+  <dates>
+    <start>2020-01-01</start>
+    <end>2025-12-31</end>
+  </dates>
+
+  <strategy>
+    <type>long_short_zscore</type>
+    <long_short>true</long_short>
+  </strategy>
+
+  <ir_benchmark>
+    <type>SPY</type>
+  </ir_benchmark>
+
+  <sharpe_benchmark>
+    <type>risk_free</type>
+  </sharpe_benchmark>
+
+  <!-- ===== Alphas ===== -->
+  <alphas>
+
+    <Alpha>
+      <AlphaInfo name="wq001" category="price_volume" instrument="equity" region="us" intervalmode="daily"/>
+      <module>alpha_factory.alpha_wq001</module>
+      <delay>1</delay>
+      <intervalmode>daily</intervalmode>
+      <Data><field>close, volume</field></Data>
+      <Op><OpNorm use_std="true"/></Op>
+    </Alpha>
+
+    <Alpha>
+      <AlphaInfo name="wq002" category="price_volume" instrument="equity" region="us" intervalmode="daily"/>
+      <module>alpha_factory.alpha_wq002</module>
+      <delay>1</delay>
+      <intervalmode>daily</intervalmode>
+      <Data><field>open, close, volume</field></Data>
+      <Op><OpNorm use_std="true"/></Op>
+    </Alpha>
+
+    <Alpha>
+      <AlphaInfo name="wq003" category="price_volume" instrument="equity" region="us" intervalmode="daily"/>
+      <module>alpha_factory.alpha_wq003</module>
+      <delay>1</delay>
+      <intervalmode>daily</intervalmode>
+      <Data><field>open, volume</field></Data>
+      <Op><OpNorm use_std="true"/></Op>
+    </Alpha>
+
+    <Alpha>
+      <AlphaInfo name="wq004" category="price_volume" instrument="equity" region="us" intervalmode="daily"/>
+      <module>alpha_factory.alpha_wq004</module>
+      <delay>1</delay>
+      <intervalmode>daily</intervalmode>
+      <Data><field>low</field></Data>
+      <Op><OpNorm use_std="true"/></Op>
+    </Alpha>
+
+    <Alpha>
+      <AlphaInfo name="wq005" category="price_volume" instrument="equity" region="us" intervalmode="daily"/>
+      <module>alpha_factory.alpha_wq005</module>
+      <delay>1</delay>
+      <intervalmode>daily</intervalmode>
+      <Data><field>open, close, vwap</field></Data>
+      <Op><OpNorm use_std="true"/></Op>
+    </Alpha>
+
+    <Alpha>
+      <AlphaInfo name="wq006" category="price_volume" instrument="equity" region="us" intervalmode="daily"/>
+      <module>alpha_factory.alpha_wq006</module>
+      <delay>1</delay>
+      <intervalmode>daily</intervalmode>
+      <Data><field>open, volume</field></Data>
+      <Op><OpNorm use_std="true"/></Op>
+    </Alpha>
+
+    <Alpha>
+      <AlphaInfo name="wq007" category="price_volume" instrument="equity" region="us" intervalmode="daily"/>
+      <module>alpha_factory.alpha_wq007</module>
+      <delay>1</delay>
+      <intervalmode>daily</intervalmode>
+      <Data><field>close, volume</field></Data>
+      <Op><OpNorm use_std="true"/></Op>
+    </Alpha>
+
+    <Alpha>
+      <AlphaInfo name="wq008" category="price_volume" instrument="equity" region="us" intervalmode="daily"/>
+      <module>alpha_factory.alpha_wq008</module>
+      <delay>1</delay>
+      <intervalmode>daily</intervalmode>
+      <Data><field>open, close, volume, high, low, vwap</field></Data>
+      <Op>
+        <OpNorm use_std="true"/>
+        <OpPow power="5"/>
+        <OpNeutralize>
+          <factor>momentum</factor>
+          <factor>liquidity</factor>
+        </OpNeutralize>
+      </Op>
+    </Alpha>
+
+    <Alpha>
+      <AlphaInfo name="wq009" category="price_volume" instrument="equity" region="us" intervalmode="daily"/>
+      <module>alpha_factory.alpha_wq009</module>
+      <delay>1</delay>
+      <intervalmode>daily</intervalmode>
+      <Data><field>close</field></Data>
+      <Op><OpNorm use_std="true"/></Op>
+    </Alpha>
+
+    <Alpha>
+      <AlphaInfo name="wq010" category="price_volume" instrument="equity" region="us" intervalmode="daily"/>
+      <module>alpha_factory.alpha_wq010</module>
+      <delay>1</delay>
+      <intervalmode>daily</intervalmode>
+      <Data><field>close</field></Data>
+      <Op><OpNorm use_std="true"/></Op>
+    </Alpha>
+
+    <Alpha>
+      <AlphaInfo name="wq011" category="price_volume" instrument="equity" region="us" intervalmode="daily"/>
+      <module>alpha_factory.alpha_wq011</module>
+      <delay>1</delay>
+      <intervalmode>daily</intervalmode>
+      <Data><field>close, vwap, volume</field></Data>
+      <Op><OpNorm use_std="true"/></Op>
+    </Alpha>
+
+    <Alpha>
+      <AlphaInfo name="wq012" category="price_volume" instrument="equity" region="us" intervalmode="daily"/>
+      <module>alpha_factory.alpha_wq012</module>
+      <delay>1</delay>
+      <intervalmode>daily</intervalmode>
+      <Data><field>close, volume</field></Data>
+      <Op><OpNorm use_std="true"/></Op>
+    </Alpha>
+
+    <Alpha>
+      <AlphaInfo name="wq013" category="price_volume" instrument="equity" region="us" intervalmode="daily"/>
+      <module>alpha_factory.alpha_wq013</module>
+      <delay>1</delay>
+      <intervalmode>daily</intervalmode>
+      <Data><field>close, volume</field></Data>
+      <Op><OpNorm use_std="true"/></Op>
+    </Alpha>
+
+    <Alpha>
+      <AlphaInfo name="wq014" category="price_volume" instrument="equity" region="us" intervalmode="daily"/>
+      <module>alpha_factory.alpha_wq014</module>
+      <delay>1</delay>
+      <intervalmode>daily</intervalmode>
+      <Data><field>close, open, volume</field></Data>
+      <Op><OpNorm use_std="true"/></Op>
+    </Alpha>
+
+    <Alpha>
+      <AlphaInfo name="wq015" category="price_volume" instrument="equity" region="us" intervalmode="daily"/>
+      <module>alpha_factory.alpha_wq015</module>
+      <delay>1</delay>
+      <intervalmode>daily</intervalmode>
+      <Data><field>high, volume</field></Data>
+      <Op><OpNorm use_std="true"/></Op>
+    </Alpha>
+
+    <Alpha>
+      <AlphaInfo name="wq016" category="price_volume" instrument="equity" region="us" intervalmode="daily"/>
+      <module>alpha_factory.alpha_wq016</module>
+      <delay>1</delay>
+      <intervalmode>daily</intervalmode>
+      <Data><field>high, volume</field></Data>
+      <Op><OpNorm use_std="true"/></Op>
+    </Alpha>
+
+    <Alpha>
+      <AlphaInfo name="wq017" category="price_volume" instrument="equity" region="us" intervalmode="daily"/>
+      <module>alpha_factory.alpha_wq017</module>
+      <delay>1</delay>
+      <intervalmode>daily</intervalmode>
+      <Data><field>close, volume</field></Data>
+      <Op><OpNorm use_std="true"/></Op>
+    </Alpha>
+
+    <Alpha>
+      <AlphaInfo name="wq018" category="price_volume" instrument="equity" region="us" intervalmode="daily"/>
+      <module>alpha_factory.alpha_wq018</module>
+      <delay>1</delay>
+      <intervalmode>daily</intervalmode>
+      <Data><field>close, open</field></Data>
+      <Op><OpNorm use_std="true"/></Op>
+    </Alpha>
+
+    <Alpha>
+      <AlphaInfo name="wq019" category="price_volume" instrument="equity" region="us" intervalmode="daily"/>
+      <module>alpha_factory.alpha_wq019</module>
+      <delay>1</delay>
+      <intervalmode>daily</intervalmode>
+      <Data><field>close</field></Data>
+      <Op><OpNorm use_std="true"/></Op>
+    </Alpha>
+
+    <Alpha>
+      <AlphaInfo name="wq020" category="price_volume" instrument="equity" region="us" intervalmode="daily"/>
+      <module>alpha_factory.alpha_wq020</module>
+      <delay>1</delay>
+      <intervalmode>daily</intervalmode>
+      <Data><field>open, high, low, close</field></Data>
+      <Op><OpNorm use_std="true"/></Op>
+    </Alpha>
+
+  </alphas>
+
+  <!-- ===== Costs ===== -->
+  <costs>
+    <commission_bps>0</commission_bps>
+    <slippage_bps>0</slippage_bps>
+  </costs>
+
+  <!-- ===== Output ===== -->
+  <output>
+    <print_stats>true</print_stats>
+    <print_summary_table>true</print_summary_table>
+    <print_daily_detail>false</print_daily_detail>
+    <plot_equity_curve>false</plot_equity_curve>
+    <plot_group_returns>false</plot_group_returns>
+    <save_signal_csv>false</save_signal_csv>
+    <save_pnl>true</save_pnl>
+  </output>
+
+</backtest>

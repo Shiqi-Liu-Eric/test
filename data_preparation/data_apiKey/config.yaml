@@ -1,0 +1,12 @@
+keys:
+  polygon_api_key: "UB20FhmJlja3m41cbpleppBUxjXwNsoN"
+  fmp_api_key: "WsWl7TJA9XNRGsCZDiT0dLC5pVaYAPjn"
+  wind_api_key: "9e5d807b-e41a-4e11-9a46-8652ee085610"
+
+  robinhood_username: "sl5661@columbia.edu"
+  robinhood_password: "encrypted"
+  CITICS_username: "880010315580"
+  CITICS_password: "encrypted"
+
+database:
+  db_root_path: "./data_preparation/database"

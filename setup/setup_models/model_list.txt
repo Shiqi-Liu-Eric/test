@@ -1,0 +1,7 @@
+- Llama 3 (8B):          huggingface-cli download meta-llama/Meta-Llama-3-8B --local-dir ./Meta-Llama-3-8B
+- Mistral 7B:            huggingface-cli download mistralai/Mistral-7B-v0.1 --local-dir ./Mistral-7B-v0.1
+- Qwen2.5 (7B):          huggingface-cli download Qwen/Qwen2.5-7B --local-dir ./Qwen2.5-7B
+- DeepSeek-V2-Lite (16B): huggingface-cli download deepseek-ai/DeepSeek-V2-Lite --local-dir ./DeepSeek-V2-Lite
+- Phi-3 (3.8B):          huggingface-cli download microsoft/Phi-3-mini-4k-instruct --local-dir ./Phi-3-mini-4k-instruct
+- Gemma 2 (9B):          huggingface-cli download google/gemma-2-9b --local-dir ./gemma-2-9b
+- ChatGLM4 (9B):         huggingface-cli download THUDM/glm-4-9b --local-dir ./glm-4-9b

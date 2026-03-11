@@ -1,0 +1,65 @@
+# ==========================================
+# Core Scientific Computing
+# ==========================================
+numpy>=1.23.0
+pandas>=2.0.0
+scipy>=1.10.0
+statsmodels>=0.14.0
+polars
+
+# ==========================================
+# Data Acquisition
+# ==========================================
+yfinance>=0.2.18
+tushare>=1.2.89
+akshare>=1.10.0
+# for using Windpy you need to use Wind's terminal and install their python package
+ccxt>=4.0.0
+robin_stocks>=3.0.0
+easytrader
+pytdx
+jqdatasdk>=1.8.10
+polygon-api-client
+massive>=2.4.0
+
+# ==========================================
+# Data Storage
+# ==========================================
+sqlalchemy>=2.0.0
+pymysql>=1.0.2
+psycopg2-binary>=2.9.0
+pymongo>=4.3.0
+redis>=4.5.0
+pyarrow>=11.0.0
+tables>=3.8.0
+openpyxl>=3.1.0
+
+
+# ==========================================
+# Machine Learning & AI
+# ==========================================
+scikit-learn>=1.2.0
+xgboost>=1.7.0
+lightgbm>=3.3.0
+catboost>=1.2.0
+# torch 
+torch>=2.0.0
+joblib>=1.2.0
+
+# ==========================================
+# Optimization
+# ==========================================
+cvxpy>=1.3.0
+
+# ==========================================
+# Backtesting & Vis
+# ==========================================
+matplotlib>=3.7.0
+seaborn>=0.12.0
+plotly>=5.14.0
+
+# ==========================================
+# Interactive
+# ==========================================
+jupyterlab
+ipykernel

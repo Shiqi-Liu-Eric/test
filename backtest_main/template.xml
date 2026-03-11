@@ -1,0 +1,154 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    template.xml — Backtest Configuration Template
+    ================================================
+    Copy this file and customise for your backtest.
+    Supports **two** layouts:
+
+    A) GLOBAL LAYOUT (recommended) — one XML, multiple alphas
+       Uses <alphas> with one or more <Alpha> blocks plus <strategy>
+       and <benchmark>.
+
+    B) LEGACY LAYOUT — one XML per alpha
+       Uses <alpha><module>...</module></alpha> and <parameters>.
+       Backward-compatible; the parser wraps it automatically.
+
+    Run:
+        python backtest_main/run.py --config backtest_main/your_config.xml
+        python backtest_main/run.py -c backtest_main/backtest_global.xml --no-plot
+-->
+<backtest>
+
+    <meta>
+        <name>ALPHA_NAME_HERE</name>
+        <description>Brief description of the alpha</description>
+        <author>SL</author>
+        <created>YYYY-MM-DD</created>
+    </meta>
+
+    <!--
+        Universe: which index constituents to use.
+        Options: sp500, nasdaq, dowjones
+        max_stocks: 0 = use all
+    -->
+    <universe>
+        <index>sp500</index>
+        <max_stocks>50</max_stocks>
+    </universe>
+
+    <!-- Backtest date range -->
+    <dates>
+        <start>2023-01-01</start>
+        <end>2025-12-31</end>
+    </dates>
+
+    <!--
+        Strategy — how signals become PnL.
+        type: long_short_zscore (default)
+          1. Cross-sectional z-score.
+          2. Normalise weights = z / sum(|z|).
+          3. PnL = sum(weight × forward_return).
+        long_short: true = long+short, false = long-only.
+        Extensible: add new functions to STRATEGIES dict in run.py.
+    -->
+    <strategy>
+        <type>long_short_zscore</type>
+        <long_short>true</long_short>
+    </strategy>
+
+    <!--
+        Benchmark — baseline for excess-return analysis (optional).
+        symbol: e.g. SPY, ^GSPC
+        When set, the runner reports:
+          - absolute performance stats
+          - excess (alpha − benchmark) Sharpe / return / drawdown
+          - benchmark overlaid on the equity-curve plot
+    -->
+    <!--
+    <benchmark>
+        <symbol>SPY</symbol>
+    </benchmark>
+    -->
+
+    <!--
+        Alphas — one or more alpha blocks.
+        Each Alpha contains:
+          module       — dotted Python import path (relative to repo root)
+          delay        — int; signal on day t vs returns on day t+delay (default 1)
+          intervalmode — daily | weekly | monthly rebalancing
+          Op           — ordered pipeline of post-processing operators:
+            <OpPow power="3"/>              Signed power (amplify strong signals)
+            <OpGroupNeut group="sector"/>   Industry-group neutralisation
+            <OpNeutralize>                  Risk-factor regression neutralisation
+              <factor>momentum</factor>       (removes factor exposure)
+              <factor>cap</factor>
+            </OpNeutralize>
+            <OpNorm use_std="true"/>        Cross-sectional z-score
+            <OpDecay window="5"/>           EMA smoothing
+            <OpTruncate max_val="0.05"/>    Clip weights
+
+        When <OpNeutralize> factors are present, the runner prints
+        TWO summary tables (neutralised + raw) for comparison.
+    -->
+    <alphas>
+
+        <Alpha>
+            <module>alpha_factory.alpha_xxxx_NN</module>
+            <delay>1</delay>
+            <intervalmode>daily</intervalmode>
+            <!--
+                Data — specify which data fields this alpha needs.
+                Only listed fields will be fetched; omit <Data> to default to close+volume.
+
+                Available fields:
+                ── Price-based (from historical-price-eod/full) ──
+                  open           开盘价
+                  high           最高价
+                  low            最低价
+                  close          收盘价 (split-adjusted)
+                  adjClose       复权收盘价 (split+dividend adjusted)
+                  volume         成交量
+                  vwap           成交量加权平均价 (Volume Weighted Average Price)
+                  change         日涨跌额 (close − prevClose)
+                  changePercent  日涨跌幅 %
+
+                ── Derived (computed internally, no extra API call) ──
+                  ret            日收益率 = close.pct_change()
+
+                ── Separate API (historical-market-capitalization) ──
+                  mkt_cap        历史每日市值 (shares outstanding × price)
+            -->
+            <Data>
+                <field>close</field>
+                <field>volume</field>
+            </Data>
+            <!--
+            <Op>
+                <OpPow power="3"/>
+                <OpNeutralize>
+                    <factor>momentum</factor>
+                    <factor>cap</factor>
+                </OpNeutralize>
+            </Op>
+            -->
+        </Alpha>
+
+    </alphas>
+
+    <!-- Transaction costs in basis points -->
+    <costs>
+        <commission_bps>1.0</commission_bps>
+        <slippage_bps>2.0</slippage_bps>
+    </costs>
+
+    <!-- Output options -->
+    <output>
+        <print_stats>true</print_stats>
+        <print_summary_table>true</print_summary_table>
+        <print_daily_detail>false</print_daily_detail>
+        <plot_equity_curve>true</plot_equity_curve>
+        <plot_group_returns>false</plot_group_returns>
+        <save_signal_csv>false</save_signal_csv>
+    </output>
+
+</backtest>

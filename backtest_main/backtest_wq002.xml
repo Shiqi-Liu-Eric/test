@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    backtest_wq002.xml - Backtest config for WorldQuant Alpha #2
+    Run with: python backtest_main/run.py -c backtest_main/backtest_wq002.xml
+-->
+<backtest>
+    <meta>
+        <name>alpha_wq002</name>
+        <description>WorldQuant Alpha #2: Volume-intraday correlation reversal</description>
+        <author>SL</author>
+    </meta>
+
+    <alpha>
+        <module>alpha_factory.alpha_wq002</module>
+        <AlphaInfo name="wq002" category="price_volume" instrument="equity" region="us" intervalmode="daily"/>
+    </alpha>
+
+    <universe>
+        <index>sp500</index>
+        <max_stocks>50</max_stocks>
+    </universe>
+
+    <dates>
+        <start>2023-01-01</start>
+        <end>2025-12-31</end>
+    </dates>
+
+    <parameters>
+        <long_short>true</long_short>
+        <rebalance_frequency>daily</rebalance_frequency>
+    </parameters>
+
+    <neutralization>
+        <market>false</market>
+        <industry>false</industry>
+    </neutralization>
+
+    <costs>
+        <commission_bps>1.0</commission_bps>
+        <slippage_bps>2.0</slippage_bps>
+    </costs>
+
+    <output>
+        <print_stats>true</print_stats>
+        <print_summary_table>true</print_summary_table>
+        <print_daily_detail>false</print_daily_detail>
+        <plot_equity_curve>true</plot_equity_curve>
+        <plot_group_returns>true</plot_group_returns>
+        <save_signal_csv>false</save_signal_csv>
+        <save_pnl>true</save_pnl>
+    </output>
+</backtest>
